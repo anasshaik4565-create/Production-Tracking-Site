@@ -13,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { STAGES, STATUSES } from "@/lib/domain";
+import { QC_STATUSES, STAGES, STATUSES, formatSet } from "@/lib/domain";
 import { exportProjectWorkbook } from "@/lib/excel";
 import { usePanels, useProjects, useSets } from "@/lib/queries";
 
@@ -46,6 +46,7 @@ function Exports() {
   const [panelId, setPanelId] = useState("all");
   const [stage, setStage] = useState("all");
   const [status, setStatus] = useState("all");
+  const [qcStatus, setQcStatus] = useState("all");
   const [busy, setBusy] = useState(false);
 
   async function run() {
@@ -58,6 +59,7 @@ function Exports() {
         panelId: panelId === "all" ? null : panelId,
         stage: stage === "all" ? null : stage,
         status: status === "all" ? null : status,
+        qcStatus: qcStatus === "all" ? null : qcStatus,
       });
       toast.success("Excel file downloaded.", { id });
     } catch {
@@ -101,7 +103,7 @@ function Exports() {
                 <SelectItem value="all">All sets</SelectItem>
                 {(sets ?? []).map((s) => (
                   <SelectItem key={s.id} value={s.id}>
-                    Set {s.set_number}
+                    {formatSet(s.set_number)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -155,8 +157,25 @@ function Exports() {
               </SelectContent>
             </Select>
           </div>
+          <div className="space-y-2">
+            <Label>QC status</Label>
+            <Select value={qcStatus} onValueChange={setQcStatus}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All QC statuses</SelectItem>
+                <SelectItem value="none">No QC status</SelectItem>
+                {QC_STATUSES.map((q) => (
+                  <SelectItem key={q.value} value={q.value}>
+                    {q.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <div className="flex items-end">
-            <Button className="w-full rounded-full" onClick={run} disabled={busy || !active}>
+            <Button className="w-full" onClick={run} disabled={busy || !active}>
               {busy ? (
                 <Loader2 className="mr-2 size-4 animate-spin" />
               ) : (

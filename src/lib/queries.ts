@@ -121,8 +121,15 @@ export function useProjectProgress(projectId: string) {
       return data as {
         overall: number;
         counts: Record<string, number>;
+        qc: Record<string, number>;
         sets: { set_number: number; progress: number }[];
-        panels: { panel: string; progress: number }[];
+        panels: {
+          id: string;
+          panel: string;
+          part_number: string;
+          set_number: number | null;
+          progress: number;
+        }[];
         stages: { stage: string; progress: number }[];
       };
     },
@@ -141,5 +148,29 @@ export function useProductionStatus(projectId: string, setId?: string | null) {
       return data ?? [];
     },
     enabled: !!projectId,
+  });
+}
+
+/** Full activity timeline (status, QC and remarks) for one stage of one panel in one set. */
+export function useStageHistory(
+  panelId: string | null,
+  setNumber: number | null,
+  stage: string | null,
+) {
+  return useQuery({
+    queryKey: ["stage-history", panelId, setNumber, stage],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("production_history")
+        .select("*")
+        .eq("panel_id", panelId as string)
+        .eq("set_number", setNumber as number)
+        .eq("stage", stage as never)
+        .order("changed_at", { ascending: false })
+        .limit(50);
+      if (error) throw error;
+      return data ?? [];
+    },
+    enabled: !!panelId && setNumber !== null && !!stage,
   });
 }

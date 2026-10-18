@@ -162,6 +162,7 @@ export type Database = {
           part_weight: number
           project_id: string
           sequence: number
+          set_id: string | null
           updated_at: string
         }
         Insert: {
@@ -174,6 +175,7 @@ export type Database = {
           part_weight?: number
           project_id: string
           sequence?: number
+          set_id?: string | null
           updated_at?: string
         }
         Update: {
@@ -186,6 +188,7 @@ export type Database = {
           part_weight?: number
           project_id?: string
           sequence?: number
+          set_id?: string | null
           updated_at?: string
         }
         Relationships: [
@@ -194,6 +197,13 @@ export type Database = {
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "panels_set_id_fkey"
+            columns: ["set_id"]
+            isOneToOne: false
+            referencedRelation: "production_sets"
             referencedColumns: ["id"]
           },
         ]
@@ -205,10 +215,13 @@ export type Database = {
           changed_by_name: string | null
           id: string
           new_status: Database["public"]["Enums"]["prod_status"]
+          new_qc_status: Database["public"]["Enums"]["qc_status"] | null
+          old_qc_status: Database["public"]["Enums"]["qc_status"] | null
           old_status: Database["public"]["Enums"]["prod_status"] | null
           panel_id: string | null
           panel_name: string
           project_id: string
+          remarks: string | null
           set_number: number
           stage: Database["public"]["Enums"]["prod_stage"]
         }
@@ -218,10 +231,13 @@ export type Database = {
           changed_by_name?: string | null
           id?: string
           new_status: Database["public"]["Enums"]["prod_status"]
+          new_qc_status?: Database["public"]["Enums"]["qc_status"] | null
+          old_qc_status?: Database["public"]["Enums"]["qc_status"] | null
           old_status?: Database["public"]["Enums"]["prod_status"] | null
           panel_id?: string | null
           panel_name: string
           project_id: string
+          remarks?: string | null
           set_number: number
           stage: Database["public"]["Enums"]["prod_stage"]
         }
@@ -231,10 +247,13 @@ export type Database = {
           changed_by_name?: string | null
           id?: string
           new_status?: Database["public"]["Enums"]["prod_status"]
+          new_qc_status?: Database["public"]["Enums"]["qc_status"] | null
+          old_qc_status?: Database["public"]["Enums"]["qc_status"] | null
           old_status?: Database["public"]["Enums"]["prod_status"] | null
           panel_id?: string | null
           panel_name?: string
           project_id?: string
+          remarks?: string | null
           set_number?: number
           stage?: Database["public"]["Enums"]["prod_stage"]
         }
@@ -278,6 +297,8 @@ export type Database = {
           id: string
           panel_id: string
           project_id: string
+          qc_status: Database["public"]["Enums"]["qc_status"] | null
+          remarks: string | null
           set_id: string
           stage: Database["public"]["Enums"]["prod_stage"]
           status: Database["public"]["Enums"]["prod_status"]
@@ -289,6 +310,8 @@ export type Database = {
           id?: string
           panel_id: string
           project_id: string
+          qc_status?: Database["public"]["Enums"]["qc_status"] | null
+          remarks?: string | null
           set_id: string
           stage: Database["public"]["Enums"]["prod_stage"]
           status?: Database["public"]["Enums"]["prod_status"]
@@ -300,6 +323,8 @@ export type Database = {
           id?: string
           panel_id?: string
           project_id?: string
+          qc_status?: Database["public"]["Enums"]["qc_status"] | null
+          remarks?: string | null
           set_id?: string
           stage?: Database["public"]["Enums"]["prod_stage"]
           status?: Database["public"]["Enums"]["prod_status"]
@@ -464,8 +489,26 @@ export type Database = {
         }
         Returns: undefined
       }
+      add_panels: {
+        Args: { p_create_missing_sets?: boolean; p_panels: Json; p_project_id: string }
+        Returns: Json
+      }
       can_configure: { Args: { _project_id: string }; Returns: boolean }
       can_update_production: { Args: { _project_id: string }; Returns: boolean }
+      create_project_full: { Args: { p_payload: Json }; Returns: Json }
+      delete_project: {
+        Args: { p_confirm_code: string; p_project_id: string }
+        Returns: Json
+      }
+      update_production_status: {
+        Args: {
+          p_id: string
+          p_qc_status: string | null
+          p_remarks: string | null
+          p_status: string
+        }
+        Returns: undefined
+      }
       generate_workflows: { Args: { p_project_id: string }; Returns: number }
       get_admin_stats: { Args: never; Returns: Json }
       get_project_progress: { Args: { p_project_id: string }; Returns: Json }
@@ -521,7 +564,9 @@ export type Database = {
         | "clear_coat"
         | "post_operations"
         | "post_operations_qc"
+        | "foam_placement"
         | "packing"
+        | "palletization"
       prod_status:
         | "pending"
         | "wip"
@@ -530,6 +575,7 @@ export type Database = {
         | "rework"
         | "not_applicable"
       project_status: "active" | "on_hold" | "completed" | "archived"
+      qc_status: "qc_pending" | "qc_approved" | "not_ok"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -685,7 +731,9 @@ export const Constants = {
         "clear_coat",
         "post_operations",
         "post_operations_qc",
+        "foam_placement",
         "packing",
+        "palletization",
       ],
       prod_status: [
         "pending",
@@ -696,6 +744,7 @@ export const Constants = {
         "not_applicable",
       ],
       project_status: ["active", "on_hold", "completed", "archived"],
+      qc_status: ["qc_pending", "qc_approved", "not_ok"],
     },
   },
 } as const

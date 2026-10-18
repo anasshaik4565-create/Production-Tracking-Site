@@ -13,7 +13,9 @@ export const STAGES = [
   { value: "clear_coat", label: "Clear Coat", short: "Clear" },
   { value: "post_operations", label: "Post Operations", short: "Post" },
   { value: "post_operations_qc", label: "Post Operations QC", short: "P.QC" },
+  { value: "foam_placement", label: "Foam Placement", short: "Foam" },
   { value: "packing", label: "Packing", short: "Pack" },
+  { value: "palletization", label: "Palletization", short: "Pallet" },
 ] as const;
 
 export type Stage = (typeof STAGES)[number]["value"];
@@ -51,6 +53,31 @@ export const STATUS_CLASS: Record<string, string> = {
   rework: "bg-rework text-rework-foreground",
   not_applicable: "bg-muted text-muted-foreground",
 };
+
+/** Quality-control status. Kept separate from the production-stage status. */
+export const QC_STATUSES = [
+  { value: "qc_pending", label: "QC Pending" },
+  { value: "qc_approved", label: "QC Approved" },
+  { value: "not_ok", label: "Not OK" },
+] as const;
+
+export type QcStatus = (typeof QC_STATUSES)[number]["value"];
+
+export const QC_STATUS_LABEL: Record<string, string> = Object.fromEntries(
+  QC_STATUSES.map((s) => [s.value, s.label]),
+);
+
+export const QC_STATUS_CLASS: Record<string, string> = {
+  qc_pending: "bg-qc-pending text-qc-pending-foreground",
+  qc_approved: "bg-qc-ok text-qc-ok-foreground",
+  not_ok: "bg-qc-notok text-qc-notok-foreground",
+};
+
+/** "Set 05" style label used everywhere a set is shown. */
+export function formatSet(n: number | null | undefined) {
+  if (n === null || n === undefined) return "All sets";
+  return `Set ${String(n).padStart(2, "0")}`;
+}
 
 export const PROJECT_STATUSES = [
   { value: "active", label: "Active" },

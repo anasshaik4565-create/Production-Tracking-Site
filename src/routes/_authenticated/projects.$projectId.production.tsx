@@ -2,13 +2,14 @@ import { useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { FileSpreadsheet, Loader2 } from "lucide-react";
+import { FileSpreadsheet, History as HistoryIcon, Loader2, MessageSquare } from "lucide-react";
 
 import { AppShell, GlassPanel } from "@/components/AppShell";
-import { ProgressBar, StatusBadge } from "@/components/StatusBadge";
+import { ProgressBar, QcBadge, StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -28,12 +29,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/integrations/supabase/client";
 import { logAudit } from "@/lib/audit";
 import {
+  QC_STATUSES,
+  QC_STATUS_LABEL,
   STAGES,
   STAGE_LABEL,
   STAGE_SHORT,
   STATUSES,
   STATUS_LABEL,
   formatDateTime,
+  formatSet,
 } from "@/lib/domain";
 import { exportProjectWorkbook } from "@/lib/excel";
 import {
@@ -43,6 +47,7 @@ import {
   useProject,
   useProjectProgress,
   useSets,
+  useStageHistory,
 } from "@/lib/queries";
 
 export const Route = createFileRoute("/_authenticated/projects/$projectId/production")({
@@ -71,6 +76,8 @@ type Cell = {
   panelName: string;
   stage: string;
   status: string;
+  qc_status: string | null;
+  remarks: string | null;
   updated_at: string;
   updated_by: string | null;
 };
@@ -90,8 +97,11 @@ function ProductionDashboard() {
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [qcFilter, setQcFilter] = useState("all");
   const [selected, setSelected] = useState<Cell | null>(null);
   const [nextStatus, setNextStatus] = useState("pending");
+  const [nextQc, setNextQc] = useState("none");
+  const [remarks, setRemarks] = useState("");
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
 
@@ -102,10 +112,11 @@ function ProductionDashboard() {
     const q = search.trim().toLowerCase();
     return (panels ?? [])
       .filter((p) => p.is_active)
+      .filter((p) => !p.set_id || p.set_id === activeSetId)
       .filter(
         (p) => !q || p.name.toLowerCase().includes(q) || p.part_number.toLowerCase().includes(q),
       );
-  }, [panels, search]);
+  }, [panels, search, activeSetId]);
 
   const cellMap = useMemo(() => {
     const map = new Map<string, Cell>();
@@ -117,6 +128,8 @@ function ProductionDashboard() {
         panelName: panel?.name ?? "",
         stage: r.stage,
         status: r.status,
+        qc_status: r.qc_status,
+        remarks: r.remarks,
         updated_at: r.updated_at,
         updated_by: r.updated_by,
       });
@@ -135,27 +148,53 @@ function ProductionDashboard() {
     }
     setSelected(cell);
     setNextStatus(cell.status);
+    setNextQc(cell.qc_status ?? "none");
+    setRemarks("");
   }
+
+  const activeSetNumber = sets?.find((x) => x.id === activeSetId)?.set_number ?? null;
+  const { data: stageHistory, isLoading: historyLoading } = useStageHistory(
+    selected?.panelId ?? null,
+    activeSetNumber,
+    selected?.stage ?? null,
+  );
 
   async function save() {
     if (!selected || saving) return;
-    setSaving(true);
-    const { error } = await supabase
-      .from("production_status")
-      .update({ status: nextStatus as never })
-      .eq("id", selected.id);
-    setSaving(false);
-    if (error) {
-      toast.error("You do not have permission to update this stage.");
+    const unchanged =
+      nextStatus === selected.status &&
+      (nextQc === "none" ? null : nextQc) === selected.qc_status &&
+      !remarks.trim();
+    if (unchanged) {
+      toast.message("Nothing to save — change the status, QC status or add a remark.");
       return;
     }
+    setSaving(true);
+    const { error } = await supabase.rpc("update_production_status", {
+      p_id: selected.id,
+      p_status: nextStatus,
+      p_qc_status: nextQc === "none" ? null : nextQc,
+      p_remarks: remarks.trim() || null,
+    });
+    setSaving(false);
+    if (error) {
+      toast.error(
+        error.message?.includes("archived")
+          ? "This project is archived, so production can't be updated."
+          : "We couldn't save this update. Please try again.",
+      );
+      return;
+    }
+    const qcText = nextQc !== "none" ? ` · ${QC_STATUS_LABEL[nextQc]}` : "";
     await logAudit(
       "Update Production Status",
-      `${selected.panelName} · ${STAGE_LABEL[selected.stage]} → ${STATUS_LABEL[nextStatus]}`,
+      `${selected.panelName} · ${STAGE_LABEL[selected.stage]} → ${STATUS_LABEL[nextStatus]}${qcText}${
+        remarks.trim() ? ` — ${remarks.trim()}` : ""
+      }`,
       projectId,
     );
     await queryClient.invalidateQueries();
-    toast.success("Status saved.");
+    toast.success("Update saved.");
     setSelected(null);
   }
 
@@ -214,7 +253,7 @@ function ProductionDashboard() {
             <SelectContent>
               {(sets ?? []).map((s) => (
                 <SelectItem key={s.id} value={s.id}>
-                  Set {s.set_number}
+                  {formatSet(s.set_number)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -238,6 +277,20 @@ function ProductionDashboard() {
               ))}
             </SelectContent>
           </Select>
+          <Select value={qcFilter} onValueChange={setQcFilter}>
+            <SelectTrigger className="lg:w-44">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All QC statuses</SelectItem>
+              <SelectItem value="none">No QC status</SelectItem>
+              {QC_STATUSES.map((q) => (
+                <SelectItem key={q.value} value={q.value}>
+                  {q.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <div className="flex-1 lg:max-w-xs">
             <div className="flex justify-between text-xs">
               <span className="text-muted-foreground">Set progress</span>
@@ -254,7 +307,7 @@ function ProductionDashboard() {
       </GlassPanel>
 
       {isLoading ? (
-        <Skeleton className="mt-4 h-80 rounded-3xl" />
+        <Skeleton className="mt-4 h-80 rounded-xl" />
       ) : (
         <>
           {/* Wide grid: desktop / tablet */}
@@ -289,7 +342,13 @@ function ProductionDashboard() {
                       {STAGES.map((stage) => {
                         const cell = cellMap.get(`${panel.id}-${stage.value}`);
                         const isApplicable = applicable(panel.id, stage.value);
-                        const dim = statusFilter !== "all" && cell && cell.status !== statusFilter;
+                        const dim =
+                          !!cell &&
+                          ((statusFilter !== "all" && cell.status !== statusFilter) ||
+                            (qcFilter !== "all" &&
+                              (qcFilter === "none"
+                                ? !!cell.qc_status
+                                : cell.qc_status !== qcFilter)));
                         if (!isApplicable || !cell) {
                           return (
                             <td key={stage.value} className="border-b px-1 py-2 text-center">
@@ -302,11 +361,16 @@ function ProductionDashboard() {
                             <button
                               type="button"
                               onClick={() => openCell(cell)}
-                              className={`w-full rounded-lg px-1 py-1 transition hover:brightness-105 ${
+                              title={cell.remarks ? `Latest remark: ${cell.remarks}` : undefined}
+                              className={`flex w-full flex-col items-center gap-0.5 rounded-lg px-1 py-1 transition hover:bg-accent ${
                                 dim ? "opacity-25" : ""
                               }`}
                             >
                               <StatusBadge status={cell.status} compact />
+                              {cell.qc_status && <QcBadge status={cell.qc_status} compact />}
+                              {cell.remarks && (
+                                <MessageSquare className="size-3 text-muted-foreground" />
+                              )}
                             </button>
                           </td>
                         );
@@ -348,7 +412,13 @@ function ProductionDashboard() {
                         className="flex items-center justify-between gap-2 rounded-xl bg-muted/60 px-3 py-2 text-left"
                       >
                         <span className="truncate text-xs">{stage.label}</span>
-                        <StatusBadge status={cell.status} compact />
+                        <span className="flex flex-col items-end gap-0.5">
+                          <StatusBadge status={cell.status} compact />
+                          {cell.qc_status && <QcBadge status={cell.qc_status} compact />}
+                          {cell.remarks && (
+                            <MessageSquare className="size-3 text-muted-foreground" />
+                          )}
+                        </span>
                       </button>
                     );
                   })}
@@ -365,41 +435,121 @@ function ProductionDashboard() {
       )}
 
       <Dialog open={!!selected} onOpenChange={(open) => !open && setSelected(null)}>
-        <DialogContent>
+        <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Update stage status</DialogTitle>
+            <DialogTitle>Update panel status</DialogTitle>
             <DialogDescription>
-              {selected ? `${selected.panelName} · ${STAGE_LABEL[selected.stage]}` : ""}
+              {selected
+                ? `${selected.panelName} · ${formatSet(activeSetNumber)} · ${STAGE_LABEL[selected.stage]}`
+                : ""}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-2">
-              <Label>Status</Label>
-              <Select value={nextStatus} onValueChange={setNextStatus}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STATUSES.map((s) => (
-                    <SelectItem key={s.value} value={s.value}>
-                      {s.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Production status</Label>
+                <Select value={nextStatus} onValueChange={setNextStatus}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STATUSES.map((s) => (
+                      <SelectItem key={s.value} value={s.value}>
+                        {s.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>QC status</Label>
+                <Select value={nextQc} onValueChange={setNextQc}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No QC status</SelectItem>
+                    {QC_STATUSES.map((q) => (
+                      <SelectItem key={q.value} value={q.value}>
+                        {q.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <p className="rounded-xl bg-muted px-3 py-2 text-xs text-muted-foreground">
-              Your name and the current date and time are recorded automatically. Last update:{" "}
+
+            <div className="space-y-2">
+              <Label htmlFor="remarks">
+                Remarks <span className="font-normal text-muted-foreground">(optional)</span>
+              </Label>
+              <Textarea
+                id="remarks"
+                value={remarks}
+                onChange={(e) => setRemarks(e.target.value)}
+                maxLength={1000}
+                rows={3}
+                placeholder="e.g. Surface pinholes observed; rework required."
+              />
+            </div>
+
+            {selected?.remarks && (
+              <div className="rounded-lg border bg-muted/50 px-3 py-2.5">
+                <p className="text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
+                  Latest remark
+                </p>
+                <p className="mt-1 text-sm whitespace-pre-wrap">{selected.remarks}</p>
+              </div>
+            )}
+
+            <div>
+              <p className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
+                <HistoryIcon className="size-3.5" /> Activity timeline
+              </p>
+              <ul className="mt-2 max-h-52 space-y-2 overflow-y-auto pr-1">
+                {historyLoading && <li className="text-sm text-muted-foreground">Loading…</li>}
+                {!historyLoading && (stageHistory ?? []).length === 0 && (
+                  <li className="text-sm text-muted-foreground">No updates recorded yet.</li>
+                )}
+                {(stageHistory ?? []).map((h) => (
+                  <li key={h.id} className="rounded-lg border px-3 py-2 text-sm">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {h.old_status && h.old_status !== h.new_status ? (
+                        <>
+                          <StatusBadge status={h.old_status} compact />
+                          <span className="text-muted-foreground">→</span>
+                        </>
+                      ) : null}
+                      <StatusBadge status={h.new_status} compact />
+                      {h.new_qc_status !== h.old_qc_status &&
+                        (h.new_qc_status ? (
+                          <QcBadge status={h.new_qc_status} compact />
+                        ) : h.old_qc_status ? (
+                          <span className="text-xs text-muted-foreground">
+                            {QC_STATUS_LABEL[h.old_qc_status]} cleared
+                          </span>
+                        ) : null)}
+                    </div>
+                    {h.remarks && <p className="mt-1 whitespace-pre-wrap">{h.remarks}</p>}
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {h.changed_by_name || "System"} · {formatDateTime(h.changed_at)}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
+              The date and time are recorded automatically. Last update:{" "}
               {selected ? formatDateTime(selected.updated_at) : "—"}
             </p>
           </div>
           <DialogFooter>
-            <Button variant="secondary" className="rounded-full" onClick={() => setSelected(null)}>
+            <Button variant="secondary" onClick={() => setSelected(null)}>
               Cancel
             </Button>
-            <Button className="rounded-full" onClick={save} disabled={saving}>
+            <Button onClick={save} disabled={saving}>
               {saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
-              Save Status
+              Save update
             </Button>
           </DialogFooter>
         </DialogContent>

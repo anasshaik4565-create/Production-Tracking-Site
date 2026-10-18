@@ -2,7 +2,7 @@ import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 
 import { AppShell, GlassPanel } from "@/components/AppShell";
-import { ProgressBar, StatusBadge } from "@/components/StatusBadge";
+import { ProgressBar, QcBadge, StatusBadge } from "@/components/StatusBadge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { STAGE_LABEL, STATUSES } from "@/lib/domain";
+import { QC_STATUSES, STAGE_LABEL, STATUSES, formatSet } from "@/lib/domain";
 import { useProjectProgress, useProjects } from "@/lib/queries";
 
 export const Route = createFileRoute("/_authenticated/analytics")({
@@ -61,7 +61,7 @@ function Analytics() {
       }
     >
       {isLoading ? (
-        <Skeleton className="h-64 rounded-3xl" />
+        <Skeleton className="h-64 rounded-xl" />
       ) : (projects ?? []).length === 0 ? (
         <GlassPanel className="p-10 text-center">
           <p className="text-sm text-muted-foreground">No projects available to analyse yet.</p>
@@ -103,6 +103,20 @@ function Analytics() {
                   );
                 })}
               </ul>
+              <p className="mt-5 mb-2 text-[11px] tracking-wider text-muted-foreground uppercase">
+                QC status
+              </p>
+              <ul className="grid gap-2 sm:grid-cols-3">
+                {QC_STATUSES.map((q) => (
+                  <li
+                    key={q.value}
+                    className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm"
+                  >
+                    <QcBadge status={q.value} />
+                    <span className="font-semibold">{progress?.qc?.[q.value] ?? 0}</span>
+                  </li>
+                ))}
+              </ul>
             </GlassPanel>
           </div>
 
@@ -113,7 +127,7 @@ function Analytics() {
                 {(progress?.sets ?? []).map((s) => (
                   <li key={s.set_number}>
                     <div className="flex justify-between text-sm">
-                      <span>Set {s.set_number}</span>
+                      <span>{formatSet(s.set_number)}</span>
                       <span className="font-semibold">{s.progress}%</span>
                     </div>
                     <ProgressBar value={s.progress} className="mt-1 h-1.5" />
@@ -125,9 +139,15 @@ function Analytics() {
               <h3 className="font-display font-bold">By panel</h3>
               <ul className="mt-4 max-h-80 space-y-3 overflow-y-auto pr-1">
                 {(progress?.panels ?? []).map((p) => (
-                  <li key={p.panel}>
+                  <li key={p.id}>
                     <div className="flex justify-between text-sm">
-                      <span className="truncate">{p.panel}</span>
+                      <span className="truncate">
+                        {p.panel}
+                        <span className="ml-1.5 text-xs text-muted-foreground">
+                          {p.set_number !== null ? formatSet(p.set_number) : "All sets"}
+                          {p.part_number ? ` · #${p.part_number}` : ""}
+                        </span>
+                      </span>
                       <span className="font-semibold">{p.progress}%</span>
                     </div>
                     <ProgressBar value={p.progress} className="mt-1 h-1.5" />

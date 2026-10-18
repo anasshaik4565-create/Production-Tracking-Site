@@ -1,11 +1,18 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { FileSpreadsheet, Gauge, Settings2 } from "lucide-react";
+import { FileSpreadsheet, Gauge, Layers, MoreHorizontal, Settings2, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import { AppShell, GlassPanel } from "@/components/AppShell";
-import { ProgressBar, ProjectStatusBadge, StatusBadge } from "@/components/StatusBadge";
+import { DeleteProjectDialog } from "@/components/DeleteProjectDialog";
+import { ProgressBar, ProjectStatusBadge, QcBadge, StatusBadge } from "@/components/StatusBadge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -20,10 +27,12 @@ import { logAudit } from "@/lib/audit";
 import {
   PROJECT_STATUSES,
   PROJECT_STATUS_LABEL,
+  QC_STATUSES,
   STAGE_LABEL,
   STATUSES,
   countryLabel,
   formatDate,
+  formatSet,
 } from "@/lib/domain";
 import { exportProjectWorkbook } from "@/lib/excel";
 import { usePanels, useProject, useProjectProgress, useSets } from "@/lib/queries";
@@ -56,6 +65,9 @@ function ProjectOverview() {
   const { data: panels } = usePanels(projectId);
   const { data: progress } = useProjectProgress(projectId);
   const [exporting, setExporting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [setFilter, setSetFilter] = useState("all");
+  const navigate = useNavigate();
 
   const archived = project?.status === "archived";
   const canConfigure = !archived;
@@ -95,7 +107,7 @@ function ProjectOverview() {
   if (isLoading) {
     return (
       <AppShell title="Loading project" breadcrumb="Production Tracker · Projects">
-        <Skeleton className="h-64 rounded-3xl" />
+        <Skeleton className="h-64 rounded-xl" />
       </AppShell>
     );
   }
@@ -107,7 +119,7 @@ function ProjectOverview() {
           <p className="text-sm text-muted-foreground">
             This project doesn't exist or you don't have access to it.
           </p>
-          <Button asChild className="mt-4 rounded-full">
+          <Button asChild className="mt-4">
             <Link to="/projects">Back to projects</Link>
           </Button>
         </GlassPanel>
@@ -116,6 +128,23 @@ function ProjectOverview() {
   }
 
   const counts = progress?.counts ?? {};
+  const setProgressByNumber = new Map(
+    (progress?.sets ?? []).map((x) => [x.set_number, x.progress]),
+  );
+  const panelGroups = Array.from(
+    (progress?.panels ?? []).reduce((map, pn) => {
+      const list = map.get(pn.set_number) ?? [];
+      list.push(pn);
+      map.set(pn.set_number, list);
+      return map;
+    }, new Map<number | null, NonNullable<typeof progress>["panels"]>()),
+  )
+    .sort(([a], [b]) => (a === null ? -1 : b === null ? 1 : a - b))
+    .map(([setNumber, panels]) => ({
+      setNumber,
+      panels,
+      setProgress: setNumber === null ? 0 : (setProgressByNumber.get(setNumber) ?? 0),
+    }));
 
   return (
     <AppShell
@@ -146,6 +175,21 @@ function ProjectOverview() {
               <FileSpreadsheet className="mr-1 size-4" /> Export
             </Button>
           }
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="secondary" aria-label="More actions">
+                <MoreHorizontal className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onSelect={() => setDeleting(true)}
+              >
+                <Trash2 className="mr-2 size-4" /> Delete project
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       }
     >
@@ -227,17 +271,28 @@ function ProjectOverview() {
               </li>
             ))}
           </ul>
+          <p className="mt-5 mb-2 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
+            Quality control
+          </p>
+          <ul className="space-y-2">
+            {QC_STATUSES.map((q) => (
+              <li key={q.value} className="flex items-center justify-between text-sm">
+                <QcBadge status={q.value} />
+                <span className="font-semibold">{progress?.qc?.[q.value] ?? 0}</span>
+              </li>
+            ))}
+          </ul>
         </GlassPanel>
       </div>
 
-      <div className="mt-4 grid gap-4 lg:grid-cols-3">
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <GlassPanel className="p-5">
           <h3 className="font-display font-bold">Progress by set</h3>
           <ul className="mt-4 space-y-3">
             {(progress?.sets ?? []).map((s) => (
               <li key={s.set_number}>
                 <div className="flex justify-between text-sm">
-                  <span>Set {s.set_number}</span>
+                  <span>{formatSet(s.set_number)}</span>
                   <span className="font-semibold">{s.progress}%</span>
                 </div>
                 <ProgressBar value={s.progress} className="mt-1 h-1.5" />
@@ -245,24 +300,6 @@ function ProjectOverview() {
             ))}
             {(progress?.sets ?? []).length === 0 && (
               <li className="text-sm text-muted-foreground">No sets yet.</li>
-            )}
-          </ul>
-        </GlassPanel>
-
-        <GlassPanel className="p-5">
-          <h3 className="font-display font-bold">Progress by panel</h3>
-          <ul className="mt-4 max-h-72 space-y-3 overflow-y-auto pr-1">
-            {(progress?.panels ?? []).map((p) => (
-              <li key={p.panel}>
-                <div className="flex justify-between text-sm">
-                  <span className="truncate">{p.panel}</span>
-                  <span className="font-semibold">{p.progress}%</span>
-                </div>
-                <ProgressBar value={p.progress} className="mt-1 h-1.5" />
-              </li>
-            ))}
-            {(progress?.panels ?? []).length === 0 && (
-              <li className="text-sm text-muted-foreground">No panels yet.</li>
             )}
           </ul>
         </GlassPanel>
@@ -288,6 +325,78 @@ function ProjectOverview() {
           </ul>
         </GlassPanel>
       </div>
+      <GlassPanel className="mt-4 p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="flex items-center gap-2 font-display font-bold">
+              <Layers className="size-4 text-primary" /> Panels by set
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Project → Set → Panel. Progress counts completed stages for each panel.
+            </p>
+          </div>
+          <Select value={setFilter} onValueChange={setSetFilter}>
+            <SelectTrigger className="h-9 w-44 text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All sets</SelectItem>
+              {(sets ?? []).map((x) => (
+                <SelectItem key={x.id} value={String(x.set_number)}>
+                  {formatSet(x.set_number)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="mt-4 space-y-5">
+          {panelGroups
+            .filter((g) => setFilter === "all" || String(g.setNumber) === setFilter)
+            .map((g) => (
+              <div key={g.setNumber ?? "legacy"}>
+                <div className="mb-2 flex items-center justify-between border-b pb-1.5">
+                  <p className="text-sm font-bold">
+                    {formatSet(g.setNumber)}
+                    <span className="ml-2 text-xs font-medium text-muted-foreground">
+                      {g.panels.length} panel{g.panels.length === 1 ? "" : "s"}
+                    </span>
+                  </p>
+                  {g.setNumber !== null && (
+                    <span className="text-xs font-semibold">{g.setProgress}%</span>
+                  )}
+                </div>
+                <ul className="grid gap-x-6 gap-y-3 md:grid-cols-2 xl:grid-cols-3">
+                  {g.panels.map((pn) => (
+                    <li key={pn.id}>
+                      <div className="flex justify-between gap-2 text-sm">
+                        <span className="truncate">
+                          {pn.panel}
+                          {pn.part_number && (
+                            <span className="ml-1.5 text-xs text-muted-foreground">
+                              #{pn.part_number}
+                            </span>
+                          )}
+                        </span>
+                        <span className="font-semibold">{pn.progress}%</span>
+                      </div>
+                      <ProgressBar value={pn.progress} className="mt-1 h-1.5" />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          {panelGroups.length === 0 && (
+            <p className="text-sm text-muted-foreground">No panels yet.</p>
+          )}
+        </div>
+      </GlassPanel>
+
+      <DeleteProjectDialog
+        project={{ id: project.id, code: project.code, name: project.name }}
+        open={deleting}
+        onOpenChange={setDeleting}
+        onDeleted={() => navigate({ to: "/projects" })}
+      />
     </AppShell>
   );
 }

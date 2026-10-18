@@ -1,5 +1,12 @@
 import { cn } from "@/lib/utils";
-import { PROJECT_STATUS_CLASS, PROJECT_STATUS_LABEL, STATUS_CLASS, STATUS_LABEL } from "@/lib/domain";
+import {
+  PROJECT_STATUS_CLASS,
+  PROJECT_STATUS_LABEL,
+  QC_STATUS_CLASS,
+  QC_STATUS_LABEL,
+  STATUS_CLASS,
+  STATUS_LABEL,
+} from "@/lib/domain";
 
 export function StatusBadge({
   status,
@@ -24,6 +31,30 @@ export function StatusBadge({
   );
 }
 
+export function QcBadge({
+  status,
+  className,
+  compact,
+}: {
+  status: string;
+  className?: string;
+  compact?: boolean;
+}) {
+  const label = QC_STATUS_LABEL[status] ?? status;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold tracking-wide whitespace-nowrap uppercase",
+        QC_STATUS_CLASS[status],
+        className,
+      )}
+    >
+      <span className="size-1.5 rounded-full bg-current" />
+      {compact ? label.replace("QC ", "QC·") : label}
+    </span>
+  );
+}
+
 export function ProjectStatusBadge({ status }: { status: string }) {
   return (
     <span
@@ -41,7 +72,7 @@ export function ProgressBar({ value, className }: { value: number; className?: s
   return (
     <div className={cn("h-2 w-full overflow-hidden rounded-full bg-muted", className)}>
       <div
-        className="h-full rounded-full prism transition-all"
+        className="h-full rounded-full bg-primary transition-[width] duration-500"
         style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
       />
     </div>

@@ -28,7 +28,7 @@ function ProductionPicker() {
   return (
     <AppShell title="Production" breadcrumb="Production Tracker · Production">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {isLoading && [0, 1, 2].map((i) => <Skeleton key={i} className="h-40 rounded-3xl" />)}
+        {isLoading && [0, 1, 2].map((i) => <Skeleton key={i} className="h-40 rounded-xl" />)}
         {(data ?? []).map((p) => (
           <GlassPanel key={p.id} className="p-5">
             <div className="flex items-start justify-between gap-2">
@@ -41,7 +41,7 @@ function ProductionPicker() {
               <ProjectStatusBadge status={p.status} />
             </div>
             <ProgressBar value={p.progress} className="mt-4" />
-            <Button asChild size="sm" className="mt-4 w-full rounded-full">
+            <Button asChild size="sm" className="mt-4 w-full">
               <Link to="/projects/$projectId/production" params={{ projectId: p.id }}>
                 Open production board
               </Link>

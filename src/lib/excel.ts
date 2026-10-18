@@ -4,9 +4,11 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   PROJECT_STATUS_LABEL,
   STAGE_LABEL,
+  QC_STATUS_LABEL,
   STATUS_LABEL,
   countryLabel,
   formatDate,
+  formatSet,
   formatTime,
 } from "@/lib/domain";
 import { logAudit } from "@/lib/audit";
@@ -34,6 +36,7 @@ export type ExportFilters = {
   setId?: string | null;
   stage?: string | null;
   status?: string | null;
+  qcStatus?: string | null;
   panelId?: string | null;
 };
 
@@ -55,6 +58,8 @@ export async function exportProjectWorkbook(projectId: string, filters: ExportFi
   if (filters.panelId) statusQuery = statusQuery.eq("panel_id", filters.panelId);
   if (filters.stage) statusQuery = statusQuery.eq("stage", filters.stage as never);
   if (filters.status) statusQuery = statusQuery.eq("status", filters.status as never);
+  if (filters.qcStatus === "none") statusQuery = statusQuery.is("qc_status", null);
+  else if (filters.qcStatus) statusQuery = statusQuery.eq("qc_status", filters.qcStatus as never);
   const { data: statuses } = await statusQuery;
 
   let historyQuery = supabase
@@ -98,7 +103,7 @@ export async function exportProjectWorkbook(projectId: string, filters: ExportFi
     {
       name: "Sets",
       rows: (sets ?? []).map((s) => ({
-        Set: `Set ${s.set_number}`,
+        Set: formatSet(s.set_number),
         Active: s.is_active ? "Yes" : "No",
         "Created Date": formatDate(s.created_at),
       })),
@@ -107,6 +112,7 @@ export async function exportProjectWorkbook(projectId: string, filters: ExportFi
       name: "Panels",
       rows: (panels ?? []).map((p) => ({
         Sequence: p.sequence,
+        Set: p.set_id ? formatSet(setById.get(p.set_id)) : "All sets",
         "Panel Name": p.name,
         "Part Number": p.part_number,
         "Part Area (m2)": Number(p.part_area),
@@ -124,11 +130,13 @@ export async function exportProjectWorkbook(projectId: string, filters: ExportFi
         const panel = panelById.get(s.panel_id);
         return {
           Project: project.code,
-          Set: `Set ${setById.get(s.set_id) ?? ""}`,
+          Set: formatSet(setById.get(s.set_id)),
           Panel: panel?.name ?? "",
           "Part Number": panel?.part_number ?? "",
           Stage: STAGE_LABEL[s.stage],
           Status: STATUS_LABEL[s.status],
+          "QC Status": s.qc_status ? QC_STATUS_LABEL[s.qc_status] : "",
+          "Latest Remark": s.remarks ?? "",
           "Updated By": lastBy.get(`${s.panel_id}|${setById.get(s.set_id)}|${s.stage}`) ?? "",
           Date: formatDate(s.updated_at),
           Time: formatTime(s.updated_at),
@@ -142,11 +150,14 @@ export async function exportProjectWorkbook(projectId: string, filters: ExportFi
         Time: formatTime(h.changed_at),
         User: h.changed_by_name ?? "",
         Project: project.code,
-        Set: `Set ${h.set_number}`,
+        Set: formatSet(h.set_number),
         Panel: h.panel_name,
         Stage: STAGE_LABEL[h.stage],
         "Old Status": h.old_status ? STATUS_LABEL[h.old_status] : "",
         "New Status": STATUS_LABEL[h.new_status],
+        "Old QC Status": h.old_qc_status ? QC_STATUS_LABEL[h.old_qc_status] : "",
+        "New QC Status": h.new_qc_status ? QC_STATUS_LABEL[h.new_qc_status] : "",
+        Remarks: h.remarks ?? "",
       })),
     },
   ];

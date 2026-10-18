@@ -1,9 +1,17 @@
 import { useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Search } from "lucide-react";
+import { Search, MoreVertical, Trash2, ExternalLink } from "lucide-react";
 
 import { AppShell, GlassPanel } from "@/components/AppShell";
+import { DeleteProjectDialog } from "@/components/DeleteProjectDialog";
 import { ProgressBar, ProjectStatusBadge } from "@/components/StatusBadge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -66,6 +74,8 @@ function ProjectsPage() {
     return list;
   }, [data, search, status, sort]);
 
+  const [toDelete, setToDelete] = useState<{ id: string; code: string; name: string } | null>(null);
+
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const current = Math.min(page, pages);
   const visible = filtered.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
@@ -121,7 +131,7 @@ function ProjectsPage() {
 
       <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {isLoading &&
-          [0, 1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-44 rounded-3xl" />)}
+          [0, 1, 2, 3, 4, 5].map((i) => <Skeleton key={i} className="h-44 rounded-xl" />)}
         {!isLoading && visible.length === 0 && (
           <GlassPanel className="p-10 text-center md:col-span-2 xl:col-span-3">
             <p className="text-sm text-muted-foreground">No projects match your filters.</p>
@@ -136,7 +146,35 @@ function ProjectsPage() {
                   {p.code} · {countryLabel(p.country, p.country_other)}
                 </p>
               </div>
-              <ProjectStatusBadge status={p.status} />
+              <div className="flex shrink-0 items-center gap-1">
+                <ProjectStatusBadge status={p.status} />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8"
+                      aria-label={`Actions for ${p.code}`}
+                    >
+                      <MoreVertical className="size-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem asChild>
+                      <Link to="/projects/$projectId" params={{ projectId: p.id }}>
+                        <ExternalLink className="mr-2 size-4" /> Open project
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      className="text-destructive focus:text-destructive"
+                      onSelect={() => setToDelete({ id: p.id, code: p.code, name: p.name })}
+                    >
+                      <Trash2 className="mr-2 size-4" /> Delete project
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             </div>
             <p className="mt-3 line-clamp-1 text-sm text-muted-foreground">
               {p.process || "Process not specified"}
@@ -197,6 +235,11 @@ function ProjectsPage() {
           </Button>
         </div>
       )}
+      <DeleteProjectDialog
+        project={toDelete}
+        open={!!toDelete}
+        onOpenChange={(open) => !open && setToDelete(null)}
+      />
     </AppShell>
   );
 }

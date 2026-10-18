@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { FileSpreadsheet } from "lucide-react";
 
 import { AppShell, GlassPanel } from "@/components/AppShell";
-import { StatusBadge } from "@/components/StatusBadge";
+import { QcBadge, StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,7 +18,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { supabase } from "@/integrations/supabase/client";
-import { STAGES, STAGE_LABEL, formatDate, formatTime } from "@/lib/domain";
+import {
+  QC_STATUSES,
+  QC_STATUS_LABEL,
+  STAGES,
+  STAGE_LABEL,
+  STATUS_LABEL,
+  formatDate,
+  formatSet,
+  formatTime,
+} from "@/lib/domain";
 import { exportCurrentView } from "@/lib/excel";
 import { useProjects } from "@/lib/queries";
 
@@ -48,6 +57,7 @@ function HistoryPage() {
   const { data: projects } = useProjects();
   const [projectId, setProjectId] = useState("all");
   const [stage, setStage] = useState("all");
+  const [qc, setQc] = useState("all");
   const [search, setSearch] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -74,13 +84,18 @@ function HistoryPage() {
     const q = search.trim().toLowerCase();
     return (data ?? []).filter((h) => {
       if (stage !== "all" && h.stage !== stage) return false;
-      if (q && !`${h.panel_name} ${h.changed_by_name ?? ""}`.toLowerCase().includes(q))
+      if (qc !== "all" && (qc === "none" ? !!h.new_qc_status : h.new_qc_status !== qc))
+        return false;
+      if (
+        q &&
+        !`${h.panel_name} ${h.changed_by_name ?? ""} ${h.remarks ?? ""}`.toLowerCase().includes(q)
+      )
         return false;
       if (from && new Date(h.changed_at) < new Date(from)) return false;
       if (to && new Date(h.changed_at) > new Date(`${to}T23:59:59`)) return false;
       return true;
     });
-  }, [data, stage, search, from, to]);
+  }, [data, stage, qc, search, from, to]);
 
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const current = Math.min(page, pages);
@@ -96,11 +111,14 @@ function HistoryPage() {
           Time: formatTime(h.changed_at),
           User: h.changed_by_name ?? "",
           Project: codeById.get(h.project_id) ?? "",
-          Set: `Set ${h.set_number}`,
+          Set: formatSet(h.set_number),
           Panel: h.panel_name,
           Stage: STAGE_LABEL[h.stage],
-          "Old Status": h.old_status ?? "",
-          "New Status": h.new_status,
+          "Old Status": h.old_status ? STATUS_LABEL[h.old_status] : "",
+          "New Status": STATUS_LABEL[h.new_status],
+          "Old QC Status": h.old_qc_status ? QC_STATUS_LABEL[h.old_qc_status] : "",
+          "New QC Status": h.new_qc_status ? QC_STATUS_LABEL[h.new_qc_status] : "",
+          Remarks: h.remarks ?? "",
         })),
         `Exported ${filtered.length} history rows`,
       );
@@ -115,13 +133,13 @@ function HistoryPage() {
       title="Production History"
       breadcrumb="Production Tracker · History"
       actions={
-        <Button size="sm" variant="secondary" className="rounded-full" onClick={exportHistory}>
+        <Button size="sm" variant="secondary" onClick={exportHistory}>
           <FileSpreadsheet className="mr-1 size-4" /> Export
         </Button>
       }
     >
       <GlassPanel className="p-4">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
           <Select
             value={projectId}
             onValueChange={(v) => {
@@ -154,8 +172,22 @@ function HistoryPage() {
               ))}
             </SelectContent>
           </Select>
+          <Select value={qc} onValueChange={setQc}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All QC statuses</SelectItem>
+              <SelectItem value="none">No QC status</SelectItem>
+              {QC_STATUSES.map((q) => (
+                <SelectItem key={q.value} value={q.value}>
+                  {q.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Input
-            placeholder="Search panel or user"
+            placeholder="Search panel, user or remark"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -173,23 +205,30 @@ function HistoryPage() {
       <GlassPanel className="mt-4">
         {isLoading ? (
           <div className="p-5">
-            <Skeleton className="h-64 w-full rounded-2xl" />
+            <Skeleton className="h-64 w-full rounded-lg" />
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="data-table w-full text-sm">
               <thead className="sticky top-0 bg-card">
                 <tr className="text-left">
-                  {["Date", "Time", "User", "Project", "Set", "Panel", "Stage", "From", "To"].map(
-                    (h) => (
-                      <th
-                        key={h}
-                        className="border-b px-4 py-3 text-[11px] tracking-wider uppercase"
-                      >
-                        {h}
-                      </th>
-                    ),
-                  )}
+                  {[
+                    "Date",
+                    "Time",
+                    "User",
+                    "Project",
+                    "Set",
+                    "Panel",
+                    "Stage",
+                    "From",
+                    "To",
+                    "QC",
+                    "Remarks",
+                  ].map((h) => (
+                    <th key={h} className="border-b px-4 py-3 text-[11px] tracking-wider uppercase">
+                      {h}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -203,7 +242,9 @@ function HistoryPage() {
                     </td>
                     <td className="border-b px-4 py-2">{h.changed_by_name || "System"}</td>
                     <td className="border-b px-4 py-2">{codeById.get(h.project_id) ?? "—"}</td>
-                    <td className="border-b px-4 py-2">Set {h.set_number}</td>
+                    <td className="border-b px-4 py-2 whitespace-nowrap">
+                      {formatSet(h.set_number)}
+                    </td>
                     <td className="border-b px-4 py-2">{h.panel_name}</td>
                     <td className="border-b px-4 py-2">{STAGE_LABEL[h.stage]}</td>
                     <td className="border-b px-4 py-2">
@@ -212,12 +253,24 @@ function HistoryPage() {
                     <td className="border-b px-4 py-2">
                       <StatusBadge status={h.new_status} compact />
                     </td>
+                    <td className="border-b px-4 py-2">
+                      {h.new_qc_status ? (
+                        <QcBadge status={h.new_qc_status} compact />
+                      ) : h.old_qc_status ? (
+                        <span className="text-xs text-muted-foreground">cleared</span>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td className="max-w-72 border-b px-4 py-2 text-xs whitespace-pre-wrap text-muted-foreground">
+                      {h.remarks || "—"}
+                    </td>
                   </tr>
                 ))}
                 {visible.length === 0 && (
                   <tr>
                     <td
-                      colSpan={9}
+                      colSpan={11}
                       className="px-4 py-10 text-center text-sm text-muted-foreground"
                     >
                       No history entries match your filters.
@@ -232,14 +285,15 @@ function HistoryPage() {
 
       <div className="mt-4 flex items-center justify-between">
         <p className="text-xs text-muted-foreground">
-          {filtered.length} entries · history is permanent and cannot be edited or deleted
+          {filtered.length} entries · history entries cannot be edited; they are only removed if
+          their whole project is deleted
         </p>
         {pages > 1 && (
           <div className="flex items-center gap-2">
             <Button
               size="sm"
               variant="secondary"
-              className="rounded-full"
+
               disabled={current === 1}
               onClick={() => setPage(current - 1)}
             >
@@ -251,7 +305,7 @@ function HistoryPage() {
             <Button
               size="sm"
               variant="secondary"
-              className="rounded-full"
+
               disabled={current === pages}
               onClick={() => setPage(current + 1)}
             >
