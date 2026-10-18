@@ -1,4 +1,4 @@
--- STEP 1 of 2: creates the tables, security rules and role list. Run this first, on its own.
+-- STEP 1 of 2 (NEW DATABASE): creates the tables, security rules, role list and stage list. Run this first, on its own.
 
 -- ---- 20260913082611_eebf9b1e-8361-4808-8764-b7ceccc127db.sql
 -- ENUMS
@@ -507,3 +507,14 @@ ALTER TYPE public.app_role ADD VALUE IF NOT EXISTS 'estimator';
 ALTER TYPE public.app_role ADD VALUE IF NOT EXISTS 'procurement';
 ALTER TYPE public.app_role ADD VALUE IF NOT EXISTS 'finance';
 ALTER TYPE public.app_role ADD VALUE IF NOT EXISTS 'management';
+
+-- ---- 20261020090000_a_new_stage_values.sql
+-- =====================================================================
+-- Migration A (run FIRST, on its own): new production stages
+--   Foam Placement  -> sits just before Packing
+--   Palletization   -> sits just after Packing
+-- Existing projects, panels and production records are not touched.
+-- Safe to run more than once.
+-- =====================================================================
+ALTER TYPE public.prod_stage ADD VALUE IF NOT EXISTS 'foam_placement' BEFORE 'packing';
+ALTER TYPE public.prod_stage ADD VALUE IF NOT EXISTS 'palletization' AFTER 'packing';
