@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { FileSpreadsheet, History as HistoryIcon, Loader2, MessageSquare } from "lucide-react";
 
 import { AppShell, GlassPanel } from "@/components/AppShell";
-import { ProgressBar, QcBadge, StatusBadge } from "@/components/StatusBadge";
+import { ProgressBar, QcBadge, StatusBadge, WeightBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,6 +28,9 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/integrations/supabase/client";
 import { logAudit } from "@/lib/audit";
+import { useAccess } from "@/lib/access";
+import { PanelWeightsCard } from "@/components/PanelWeightsCard";
+import { compareWeight, effectiveTolerance, WEIGHT_STAGE } from "@/lib/weights";
 import {
   QC_STATUSES,
   QC_STATUS_LABEL,
@@ -42,6 +45,7 @@ import {
 import { exportProjectWorkbook } from "@/lib/excel";
 import {
   usePanelStages,
+  usePanelWeights,
   usePanels,
   useProductionStatus,
   useProject,
@@ -90,6 +94,8 @@ function ProductionDashboard() {
   const { data: panels } = usePanels(projectId);
   const { data: stages } = usePanelStages(projectId);
   const { data: progress } = useProjectProgress(projectId);
+  const { data: weights } = usePanelWeights(projectId);
+  const { isAdmin } = useAccess();
 
   const [setId, setSetId] = useState<string | null>(null);
   const activeSetId = setId ?? sets?.[0]?.id ?? null;
@@ -104,9 +110,11 @@ function ProductionDashboard() {
   const [remarks, setRemarks] = useState("");
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [untrimmedInput, setUntrimmedInput] = useState("");
+  const [finalInput, setFinalInput] = useState("");
 
   const archived = project?.status === "archived";
-  const canUpdate = !archived;
+  const canUpdate = !archived && isAdmin;
 
   const activePanels = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -142,10 +150,9 @@ function ProductionDashboard() {
 
   function openCell(cell: Cell | undefined) {
     if (!cell) return;
-    if (!canUpdate) {
-      toast.error("You do not have permission to update production status.");
-      return;
-    }
+    const w = (weights ?? []).find((x) => x.panel_id === cell.panelId && x.set_id === activeSetId);
+    setUntrimmedInput(w?.untrimmed_weight != null ? String(w.untrimmed_weight) : "");
+    setFinalInput(w?.final_weight != null ? String(w.final_weight) : "");
     setSelected(cell);
     setNextStatus(cell.status);
     setNextQc(cell.qc_status ?? "none");
@@ -159,36 +166,73 @@ function ProductionDashboard() {
     selected?.stage ?? null,
   );
 
+  const selectedPanel = (panels ?? []).find((p) => p.id === selected?.panelId);
+  const weightKind: "untrimmed" | "final" | null =
+    selected?.stage === WEIGHT_STAGE.untrimmed
+      ? "untrimmed"
+      : selected?.stage === WEIGHT_STAGE.final
+        ? "final"
+        : null;
+  const savedWeights = (weights ?? []).find(
+    (x) => x.panel_id === selected?.panelId && x.set_id === activeSetId,
+  );
+  const weightInput = weightKind === "untrimmed" ? untrimmedInput : finalInput;
+  const weightPreview = compareWeight(
+    selectedPanel?.part_weight,
+    weightInput.trim() === "" || !Number.isFinite(Number(weightInput)) ? null : Number(weightInput),
+    effectiveTolerance(selectedPanel?.weight_tolerance_pct, project?.weight_tolerance_pct),
+  );
+
   async function save() {
-    if (!selected || saving) return;
+    if (!selected || saving || !canUpdate) return;
+    // Weights are optional; only the weight that belongs to this stage is edited here.
+    const typed = weightInput.trim();
+    if (weightKind && typed !== "" && (!Number.isFinite(Number(typed)) || Number(typed) < 0)) {
+      toast.error("Weight must be zero or a positive number.");
+      return;
+    }
+    const prevU = savedWeights?.untrimmed_weight ?? null;
+    const prevF = savedWeights?.final_weight ?? null;
+    const nextU = weightKind === "untrimmed" ? (typed === "" ? null : Number(typed)) : prevU;
+    const nextF = weightKind === "final" ? (typed === "" ? null : Number(typed)) : prevF;
+    const weightsChanged = weightKind !== null && (nextU !== prevU || nextF !== prevF);
     const unchanged =
       nextStatus === selected.status &&
       (nextQc === "none" ? null : nextQc) === selected.qc_status &&
-      !remarks.trim();
+      !remarks.trim() &&
+      !weightsChanged;
     if (unchanged) {
-      toast.message("Nothing to save — change the status, QC status or add a remark.");
+      toast.message("Nothing to save — change the status, QC status, weight or add a remark.");
       return;
     }
     setSaving(true);
-    const { error } = await supabase.rpc("update_production_status", {
+    const { error } = await supabase.rpc("save_stage_update", {
       p_id: selected.id,
       p_status: nextStatus,
       p_qc_status: nextQc === "none" ? null : nextQc,
       p_remarks: remarks.trim() || null,
+      p_apply_weights: weightsChanged,
+      p_untrimmed: nextU,
+      p_final: nextF,
     });
     setSaving(false);
     if (error) {
       toast.error(
         error.message?.includes("archived")
           ? "This project is archived, so production can't be updated."
-          : "We couldn't save this update. Please try again.",
+          : error.code === "42501"
+            ? "Only Admin can update production."
+            : "We couldn't save this update. Please try again.",
       );
       return;
     }
     const qcText = nextQc !== "none" ? ` · ${QC_STATUS_LABEL[nextQc]}` : "";
+    const weightText = weightsChanged
+      ? ` · ${weightKind === "untrimmed" ? "untrimmed" : "final"} weight ${typed === "" ? "cleared" : `${typed} kg`}`
+      : "";
     await logAudit(
       "Update Production Status",
-      `${selected.panelName} · ${STAGE_LABEL[selected.stage]} → ${STATUS_LABEL[nextStatus]}${qcText}${
+      `${selected.panelName} · ${STAGE_LABEL[selected.stage]} → ${STATUS_LABEL[nextStatus]}${qcText}${weightText}${
         remarks.trim() ? ` — ${remarks.trim()}` : ""
       }`,
       projectId,
@@ -434,10 +478,21 @@ function ProductionDashboard() {
         </>
       )}
 
+      {!isLoading && (
+        <PanelWeightsCard
+          projectId={projectId}
+          setId={activeSetId}
+          setNumber={activeSetNumber}
+          panels={activePanels}
+          projectTolerance={project?.weight_tolerance_pct}
+          canEdit={canUpdate}
+        />
+      )}
+
       <Dialog open={!!selected} onOpenChange={(open) => !open && setSelected(null)}>
         <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Update panel status</DialogTitle>
+            <DialogTitle>{canUpdate ? "Update panel status" : "Panel status"}</DialogTitle>
             <DialogDescription>
               {selected
                 ? `${selected.panelName} · ${formatSet(activeSetNumber)} · ${STAGE_LABEL[selected.stage]}`
@@ -448,7 +503,7 @@ function ProductionDashboard() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>Production status</Label>
-                <Select value={nextStatus} onValueChange={setNextStatus}>
+                <Select value={nextStatus} onValueChange={setNextStatus} disabled={!canUpdate}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -463,7 +518,7 @@ function ProductionDashboard() {
               </div>
               <div className="space-y-2">
                 <Label>QC status</Label>
-                <Select value={nextQc} onValueChange={setNextQc}>
+                <Select value={nextQc} onValueChange={setNextQc} disabled={!canUpdate}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -479,19 +534,53 @@ function ProductionDashboard() {
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="remarks">
-                Remarks <span className="font-normal text-muted-foreground">(optional)</span>
-              </Label>
-              <Textarea
-                id="remarks"
-                value={remarks}
-                onChange={(e) => setRemarks(e.target.value)}
-                maxLength={1000}
-                rows={3}
-                placeholder="e.g. Surface pinholes observed; rework required."
-              />
-            </div>
+            {weightKind && (
+              <div className="space-y-1.5">
+                <Label htmlFor="stage-weight">
+                  {weightKind === "untrimmed" ? "Untrimmed weight (kg)" : "Final weight (kg)"}{" "}
+                  <span className="font-normal text-muted-foreground">(optional)</span>
+                </Label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input
+                    id="stage-weight"
+                    type="number"
+                    min={0}
+                    step="0.001"
+                    inputMode="decimal"
+                    className="w-40"
+                    disabled={!canUpdate}
+                    value={weightKind === "untrimmed" ? untrimmedInput : finalInput}
+                    onChange={(e) =>
+                      weightKind === "untrimmed"
+                        ? setUntrimmedInput(e.target.value)
+                        : setFinalInput(e.target.value)
+                    }
+                  />
+                  <WeightBadge comparison={weightPreview} />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Compared with the expected Part Weight (
+                  {selectedPanel ? `${Number(selectedPanel.part_weight)} kg` : "—"}). You can save
+                  without a weight.
+                </p>
+              </div>
+            )}
+
+            {canUpdate && (
+              <div className="space-y-2">
+                <Label htmlFor="remarks">
+                  Remarks <span className="font-normal text-muted-foreground">(optional)</span>
+                </Label>
+                <Textarea
+                  id="remarks"
+                  value={remarks}
+                  onChange={(e) => setRemarks(e.target.value)}
+                  maxLength={1000}
+                  rows={3}
+                  placeholder="e.g. Surface pinholes observed; rework required."
+                />
+              </div>
+            )}
 
             {selected?.remarks && (
               <div className="rounded-lg border bg-muted/50 px-3 py-2.5">
@@ -545,12 +634,14 @@ function ProductionDashboard() {
           </div>
           <DialogFooter>
             <Button variant="secondary" onClick={() => setSelected(null)}>
-              Cancel
+              {canUpdate ? "Cancel" : "Close"}
             </Button>
-            <Button onClick={save} disabled={saving}>
-              {saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
-              Save update
-            </Button>
+            {canUpdate && (
+              <Button onClick={save} disabled={saving}>
+                {saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+                Save update
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

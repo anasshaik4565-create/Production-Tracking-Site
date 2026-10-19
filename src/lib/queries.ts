@@ -11,6 +11,8 @@ export type ProjectRow = {
   process: string;
   set_count: number;
   status: string;
+  weight_tolerance_pct: number;
+  default_stages: string[] | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -172,5 +174,21 @@ export function useStageHistory(
       return data ?? [];
     },
     enabled: !!panelId && setNumber !== null && !!stage,
+  });
+}
+
+/** Untrimmed / final weights recorded per panel and set. */
+export function usePanelWeights(projectId: string) {
+  return useQuery({
+    queryKey: ["panel-weights", projectId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("panel_weights")
+        .select("*")
+        .eq("project_id", projectId);
+      if (error) throw error;
+      return data ?? [];
+    },
+    enabled: !!projectId,
   });
 }

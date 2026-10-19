@@ -17,6 +17,7 @@ import { ProgressBar, ProjectStatusBadge, QcBadge } from "@/components/StatusBad
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/integrations/supabase/client";
+import { useAccess } from "@/lib/access";
 import { STAGE_LABEL, STATUS_LABEL, countryLabel, formatDateTime, formatSet } from "@/lib/domain";
 import { useProjects } from "@/lib/queries";
 
@@ -39,6 +40,7 @@ export const Route = createFileRoute("/_authenticated/dashboard")({
 });
 
 function Dashboard() {
+  const { isAdmin } = useAccess();
   const { data: projects, isLoading } = useProjects();
   const { data: activity } = useQuery({
     queryKey: ["dashboard-activity"],
@@ -83,11 +85,13 @@ function Dashboard() {
       title="Production Tracker"
       breadcrumb="Production Tracker · Dashboard"
       actions={
-        <Button asChild>
-          <Link to="/projects/new">
-            <Plus className="mr-1 size-4" /> Create New Project
-          </Link>
-        </Button>
+        isAdmin ? (
+          <Button asChild>
+            <Link to="/projects/new">
+              <Plus className="mr-1 size-4" /> Create New Project
+            </Link>
+          </Button>
+        ) : undefined
       }
     >
       <section className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-5">

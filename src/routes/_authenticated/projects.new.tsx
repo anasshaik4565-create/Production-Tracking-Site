@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { supabase } from "@/integrations/supabase/client";
+import { useAccess } from "@/lib/access";
 import { logAudit } from "@/lib/audit";
 import { PanelExcelImport } from "@/components/PanelExcelImport";
 import { COUNTRIES, STAGES, formatSet } from "@/lib/domain";
@@ -44,6 +45,7 @@ type PanelDraft = {
   set_number: string;
   name: string;
   part_number: string;
+  id_number: string;
   part_area: string;
   part_weight: string;
   stages: string[];
@@ -51,20 +53,26 @@ type PanelDraft = {
 
 const ALL_STAGES = STAGES.map((s) => s.value as string);
 
-function emptyPanel(setNumber = ""): PanelDraft {
+function emptyPanel(setNumber = "", stages: string[] = ALL_STAGES): PanelDraft {
   return {
     set_number: setNumber,
     name: "",
     part_number: "",
+    id_number: "",
     part_area: "",
     part_weight: "",
-    stages: [...ALL_STAGES],
+    stages: [...stages],
   };
 }
 
 function isBlankPanel(p: PanelDraft) {
-  return !p.name.trim() && !p.part_number.trim() && !p.part_area && !p.part_weight;
+  return (
+    !p.name.trim() && !p.part_number.trim() && !p.id_number.trim() && !p.part_area && !p.part_weight
+  );
 }
+
+const sameStages = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((x) => b.includes(x));
 
 const STEPS = ["Project details", "Sets", "Panels", "Stages"] as const;
 
@@ -83,6 +91,33 @@ function NewProject() {
   const [sets, setSets] = useState<number[]>([1]);
   const [setInput, setSetInput] = useState("");
   const [panels, setPanels] = useState<PanelDraft[]>([emptyPanel("1")]);
+  const [tolerance, setTolerance] = useState("5");
+  const [stageMode, setStageMode] = useState<"all" | "individual">("all");
+  const [masterStages, setMasterStages] = useState<string[]>([...ALL_STAGES]);
+  const [useForNew, setUseForNew] = useState(true);
+  const { ready, isAdmin } = useAccess();
+
+  useEffect(() => {
+    if (ready && !isAdmin) {
+      toast.error("Only Admin can create projects.");
+      navigate({ to: "/projects", replace: true });
+    }
+  }, [ready, isAdmin, navigate]);
+
+  function toggleMaster(stage: string) {
+    setMasterStages((prev) =>
+      prev.includes(stage) ? prev.filter((x) => x !== stage) : [...prev, stage],
+    );
+  }
+
+  function applyMasterToAll() {
+    if (masterStages.length === 0) {
+      toast.error("Select at least one stage first.");
+      return;
+    }
+    setPanels((prev) => prev.map((p) => ({ ...p, stages: [...masterStages] })));
+    toast.success(`Applied ${masterStages.length} stages to all ${panels.length} panels.`);
+  }
 
   function updatePanel(index: number, patch: Partial<PanelDraft>) {
     setPanels((prev) => prev.map((p, i) => (i === index ? { ...p, ...patch } : p)));
@@ -145,9 +180,10 @@ function NewProject() {
         set_number: String(r.set_number),
         name: r.name,
         part_number: r.part_number,
+        id_number: r.id_number,
         part_area: String(r.part_area),
         part_weight: String(r.part_weight),
-        stages: [...ALL_STAGES],
+        stages: [...(useForNew ? masterStages : ALL_STAGES)],
       })),
     ]);
     toast.success(`${rows.length} panels added from Excel.`);
@@ -161,6 +197,11 @@ function NewProject() {
       }
       if (country === "Other" && !countryOther.trim()) {
         toast.error("Please specify the country.");
+        return;
+      }
+      const tol = Number(tolerance);
+      if (tolerance.trim() === "" || !Number.isFinite(tol) || tol < 0 || tol > 100) {
+        toast.error("Weight tolerance must be a number from 0 to 100.");
         return;
       }
     }
@@ -182,16 +223,19 @@ function NewProject() {
 
   function validatePanels(): string | null {
     if (panels.length === 0) return "Add at least one panel.";
-    const seen = new Set<string>();
+    const seenIds = new Map<string, number>();
     for (const [i, p] of panels.entries()) {
       const label = p.name.trim() || `Panel ${i + 1}`;
       if (!p.name.trim()) return `Panel ${i + 1} needs a name.`;
       if (!sets.includes(Number(p.set_number))) return `${label}: choose a set.`;
       if (!p.part_number.trim()) return `${label}: enter a part number.`;
-      const key = p.part_number.trim().toLowerCase();
-      if (seen.has(key))
-        return `Part number ${p.part_number.trim()} is used by more than one panel.`;
-      seen.add(key);
+      const idKey = p.id_number.trim().toLowerCase();
+      if (idKey) {
+        const first = seenIds.get(idKey);
+        if (first !== undefined)
+          return `ID Number ${p.id_number.trim()} is used by panel ${first} and panel ${i + 1}. ID Numbers must be unique.`;
+        seenIds.set(idKey, i + 1);
+      }
       if (p.part_area && (!Number.isFinite(Number(p.part_area)) || Number(p.part_area) < 0))
         return `${label}: part area must be a positive number.`;
       if (p.part_weight && (!Number.isFinite(Number(p.part_weight)) || Number(p.part_weight) < 0))
@@ -221,10 +265,13 @@ function NewProject() {
           country_other: country === "Other" ? countryOther.trim() : null,
           process: process.trim(),
           sets,
+          weight_tolerance_pct: Number(tolerance),
+          default_stages: useForNew ? masterStages : null,
           panels: panels.map((p) => ({
             name: p.name.trim(),
             set_number: Number(p.set_number),
             part_number: p.part_number.trim(),
+            id_number: p.id_number.trim() || null,
             part_area: p.part_area === "" ? 0 : Number(p.part_area),
             part_weight: p.part_weight === "" ? 0 : Number(p.part_weight),
             stages: p.stages,
@@ -320,6 +367,22 @@ function NewProject() {
                 />
               </div>
             )}
+            <div className="space-y-2">
+              <Label htmlFor="p-tol">Weight tolerance (± %)</Label>
+              <Input
+                id="p-tol"
+                type="number"
+                min={0}
+                max={100}
+                step="0.1"
+                value={tolerance}
+                onChange={(e) => setTolerance(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Panels within this deviation from the Part Weight show green. Default is 5%. Admin
+                can change it later.
+              </p>
+            </div>
             <div className="space-y-2 sm:col-span-2">
               <Label htmlFor="p-process">Process</Label>
               <Textarea
@@ -415,7 +478,7 @@ function NewProject() {
                 </p>
               </div>
               <PanelExcelImport
-                existingParts={panels.map((p) => p.part_number)}
+                existingIds={panels.map((p) => p.id_number)}
                 knownSets={sets}
                 onImport={importPanels}
               />
@@ -445,7 +508,10 @@ function NewProject() {
                         size="sm"
                         variant="secondary"
                         onClick={() =>
-                          setPanels((prev) => [...prev, emptyPanel(String(setNumber))])
+                          setPanels((prev) => [
+                            ...prev,
+                            emptyPanel(String(setNumber), useForNew ? masterStages : ALL_STAGES),
+                          ])
                         }
                       >
                         <Plus className="mr-1 size-4" /> Add panel to {formatSet(setNumber)}
@@ -473,7 +539,7 @@ function NewProject() {
                             <Trash2 className="size-4" />
                           </Button>
                         </div>
-                        <div className="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                        <div className="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
                           <div className="space-y-1.5">
                             <Label>Set</Label>
                             <Select
@@ -507,6 +573,14 @@ function NewProject() {
                             />
                           </div>
                           <div className="space-y-1.5">
+                            <Label>ID Number</Label>
+                            <Input
+                              value={panel.id_number}
+                              onChange={(e) => updatePanel(i, { id_number: e.target.value })}
+                              placeholder="optional"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
                             <Label>Part area (m²)</Label>
                             <Input
                               type="number"
@@ -533,16 +607,93 @@ function NewProject() {
             })}
             <p className="text-xs text-muted-foreground">
               {panels.length} panel{panels.length === 1 ? "" : "s"} across {sets.length} set
-              {sets.length === 1 ? "" : "s"}. Each part number must be unique within the project.
+              {sets.length === 1 ? "" : "s"}. Part numbers may repeat; an ID Number, when entered,
+              must be unique within the project.
             </p>
           </div>
         )}
 
         {step === 3 && (
           <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              {(
+                [
+                  ["all", "Apply to All Panels"],
+                  ["individual", "Configure Individually"],
+                ] as const
+              ).map(([value, label]) => (
+                <Button
+                  key={value}
+                  type="button"
+                  size="sm"
+                  variant={stageMode === value ? "default" : "secondary"}
+                  onClick={() => setStageMode(value)}
+                >
+                  {label}
+                </Button>
+              ))}
+              <span className="text-xs text-muted-foreground">
+                You can switch at any time. Nothing is lost when you switch.
+              </span>
+            </div>
+
+            <div className="rounded-lg border bg-accent/40 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-semibold">Apply to All Panels</p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setMasterStages([...ALL_STAGES])}
+                  >
+                    Select all
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setMasterStages([])}>
+                    Clear
+                  </Button>
+                  <Button size="sm" onClick={applyMasterToAll}>
+                    Apply to all {panels.length} panels
+                  </Button>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {STAGES.map((stage) => {
+                  const on = masterStages.includes(stage.value);
+                  return (
+                    <button
+                      key={stage.value}
+                      type="button"
+                      onClick={() => toggleMaster(stage.value)}
+                      className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                        on
+                          ? "prism text-primary-foreground"
+                          : "bg-muted text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {stage.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <label className="mt-3 flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={useForNew}
+                  onChange={(e) => setUseForNew(e.target.checked)}
+                />
+                Use this selection for panels added later (in this wizard and after the project is
+                created)
+              </label>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {masterStages.length} stages selected ·{" "}
+                {panels.filter((p) => sameStages(p.stages, masterStages)).length} of {panels.length}{" "}
+                panels currently match. Choosing Apply replaces the stages of every panel in every
+                set.
+              </p>
+            </div>
+
             <p className="text-sm text-muted-foreground">
-              Choose the stages that apply to each panel. Unselected stages are recorded as Not
-              Applicable and never count towards progress.
+              Unselected stages are recorded as Not Applicable and never count towards progress.
             </p>
             {panels.map((panel, i) => (
               <div key={i} className="rounded-lg border bg-card/60 p-4">
@@ -551,49 +702,62 @@ function NewProject() {
                     {panel.name || `Panel ${i + 1}`}
                     <span className="ml-2 text-xs font-medium text-muted-foreground">
                       {panel.part_number}
+                      {panel.id_number ? ` · ID ${panel.id_number}` : ""}
                     </span>
+                    {!sameStages(panel.stages, masterStages) && (
+                      <span className="ml-2 rounded-md bg-hold px-1.5 py-0.5 text-[10px] font-bold text-hold-foreground uppercase">
+                        Custom
+                      </span>
+                    )}
                   </p>
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="rounded-full"
-                      onClick={() => updatePanel(i, { stages: [...ALL_STAGES] })}
-                    >
-                      Select all
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="rounded-full"
-                      onClick={() => updatePanel(i, { stages: [] })}
-                    >
-                      Clear
-                    </Button>
-                  </div>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {STAGES.map((stage) => {
-                    const on = panel.stages.includes(stage.value);
-                    return (
-                      <button
-                        key={stage.value}
-                        type="button"
-                        onClick={() => toggleStage(i, stage.value)}
-                        className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
-                          on
-                            ? "prism text-primary-foreground"
-                            : "bg-muted text-muted-foreground hover:text-foreground"
-                        }`}
+                  {stageMode === "individual" && (
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => updatePanel(i, { stages: [...ALL_STAGES] })}
                       >
-                        {stage.label}
-                      </button>
-                    );
-                  })}
+                        Select all
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => updatePanel(i, { stages: [] })}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+                  )}
                 </div>
+                {stageMode === "individual" && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {STAGES.map((stage) => {
+                      const on = panel.stages.includes(stage.value);
+                      return (
+                        <button
+                          key={stage.value}
+                          type="button"
+                          onClick={() => toggleStage(i, stage.value)}
+                          className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                            on
+                              ? "prism text-primary-foreground"
+                              : "bg-muted text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          {stage.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
                 <p className="mt-2 text-xs text-muted-foreground">
                   {formatSet(Number(panel.set_number))} · {panel.stages.length} of{" "}
                   {ALL_STAGES.length} stages applicable · {panel.stages.length} production records
+                  {stageMode === "all" && panel.stages.length > 0
+                    ? ` · ${STAGES.filter((st) => panel.stages.includes(st.value))
+                        .map((st) => st.short)
+                        .join(" → ")}`
+                    : ""}
                 </p>
               </div>
             ))}

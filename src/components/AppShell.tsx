@@ -1,5 +1,5 @@
-import { Link, useRouterState } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BarChart3,
   Bell,
@@ -9,13 +9,15 @@ import {
   Gauge,
   History,
   LayoutDashboard,
+  LogOut,
   Menu,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 
 import { supabase } from "@/integrations/supabase/client";
 import { QcBadge } from "@/components/StatusBadge";
 import { QC_STATUS_LABEL, STAGE_LABEL, STATUS_LABEL, formatSet, formatTime } from "@/lib/domain";
+import { signOutAll, useAccess } from "@/lib/access";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -88,6 +90,46 @@ function Brand() {
           Factory operations
         </p>
       </div>
+    </div>
+  );
+}
+
+/** Shows which access mode is active and lets the user sign out. */
+function AccessChip() {
+  const { role, ready } = useAccess();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  // Session ended (sign-out in another tab, expired token): go back to the login page.
+  useEffect(() => {
+    if (ready && !role) navigate({ to: "/login", replace: true });
+  }, [ready, role, navigate]);
+
+  if (!role) return null;
+  return (
+    <div className="flex items-center gap-1.5">
+      <span
+        className={cn(
+          "hidden rounded-md px-2 py-1 text-[11px] font-bold tracking-wide uppercase sm:inline-block",
+          role === "admin"
+            ? "bg-primary text-primary-foreground"
+            : "bg-muted text-muted-foreground",
+        )}
+      >
+        {role === "admin" ? "Admin" : "Reader"}
+      </span>
+      <button
+        aria-label="Sign out"
+        title="Sign out"
+        onClick={async () => {
+          await signOutAll();
+          queryClient.clear();
+          navigate({ to: "/login", replace: true });
+        }}
+        className="grid size-9 place-items-center rounded-lg border bg-card text-muted-foreground shadow-sm hover:text-foreground"
+      >
+        <LogOut className="size-4" />
+      </button>
     </div>
   );
 }
@@ -220,6 +262,7 @@ export function AppShell({
           <div className="flex shrink-0 items-center gap-2">
             {actions}
             <Notifications />
+            <AccessChip />
           </div>
         </header>
         <div className="pt-fade-in mx-auto max-w-[1500px] px-4 py-6 pb-12 lg:px-8">{children}</div>

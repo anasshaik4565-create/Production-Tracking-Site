@@ -162,7 +162,9 @@ export type Database = {
           part_weight: number
           project_id: string
           sequence: number
+          id_number: string | null
           set_id: string | null
+          weight_tolerance_pct: number | null
           updated_at: string
         }
         Insert: {
@@ -175,7 +177,9 @@ export type Database = {
           part_weight?: number
           project_id: string
           sequence?: number
+          id_number?: string | null
           set_id?: string | null
+          weight_tolerance_pct?: number | null
           updated_at?: string
         }
         Update: {
@@ -188,7 +192,9 @@ export type Database = {
           part_weight?: number
           project_id?: string
           sequence?: number
+          id_number?: string | null
           set_id?: string | null
+          weight_tolerance_pct?: number | null
           updated_at?: string
         }
         Relationships: [
@@ -207,6 +213,39 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      panel_weights: {
+        Row: {
+          final_weight: number | null
+          id: string
+          panel_id: string
+          project_id: string
+          set_id: string
+          untrimmed_weight: number | null
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          final_weight?: number | null
+          id?: string
+          panel_id: string
+          project_id: string
+          set_id: string
+          untrimmed_weight?: number | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          final_weight?: number | null
+          id?: string
+          panel_id?: string
+          project_id?: string
+          set_id?: string
+          untrimmed_weight?: number | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: []
       }
       production_history: {
         Row: {
@@ -421,10 +460,12 @@ export type Database = {
           country_other: string | null
           created_at: string
           created_by: string | null
+          default_stages: string[] | null
           id: string
           name: string
           process: string
           set_count: number
+          weight_tolerance_pct: number
           status: Database["public"]["Enums"]["project_status"]
           updated_at: string
         }
@@ -434,10 +475,12 @@ export type Database = {
           country_other?: string | null
           created_at?: string
           created_by?: string | null
+          default_stages?: string[] | null
           id?: string
           name: string
           process?: string
           set_count?: number
+          weight_tolerance_pct?: number
           status?: Database["public"]["Enums"]["project_status"]
           updated_at?: string
         }
@@ -447,10 +490,12 @@ export type Database = {
           country_other?: string | null
           created_at?: string
           created_by?: string | null
+          default_stages?: string[] | null
           id?: string
           name?: string
           process?: string
           set_count?: number
+          weight_tolerance_pct?: number
           status?: Database["public"]["Enums"]["project_status"]
           updated_at?: string
         }
@@ -495,6 +540,36 @@ export type Database = {
       }
       can_configure: { Args: { _project_id: string }; Returns: boolean }
       can_update_production: { Args: { _project_id: string }; Returns: boolean }
+      apply_stages_to_panels: {
+        Args: {
+          p_panel_ids?: string[] | null
+          p_project_id: string
+          p_save_default?: boolean
+          p_stages: string[]
+        }
+        Returns: Json
+      }
+      save_stage_update: {
+        Args: {
+          p_apply_weights?: boolean
+          p_final?: number | null
+          p_id: string
+          p_qc_status: string | null
+          p_remarks: string | null
+          p_status: string
+          p_untrimmed?: number | null
+        }
+        Returns: undefined
+      }
+      set_panel_weights: {
+        Args: {
+          p_final: number | null
+          p_panel_id: string
+          p_set_id: string
+          p_untrimmed: number | null
+        }
+        Returns: undefined
+      }
       create_project_full: { Args: { p_payload: Json }; Returns: Json }
       delete_project: {
         Args: { p_confirm_code: string; p_project_id: string }

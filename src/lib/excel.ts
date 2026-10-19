@@ -1,6 +1,7 @@
 import * as XLSX from "xlsx";
 
 import { supabase } from "@/integrations/supabase/client";
+import { compareWeight, effectiveTolerance, formatDeviation, verdictLabel } from "@/lib/weights";
 import {
   PROJECT_STATUS_LABEL,
   STAGE_LABEL,
@@ -42,14 +43,19 @@ export type ExportFilters = {
 
 /** Full project workbook: summary, sets, panels, production status, history. */
 export async function exportProjectWorkbook(projectId: string, filters: ExportFilters = {}) {
-  const [{ data: project }, { data: sets }, { data: panels }, { data: stages }] = await Promise.all(
-    [
-      supabase.from("projects").select("*").eq("id", projectId).maybeSingle(),
-      supabase.from("production_sets").select("*").eq("project_id", projectId).order("set_number"),
-      supabase.from("panels").select("*").eq("project_id", projectId).order("sequence"),
-      supabase.from("panel_stages").select("*").eq("project_id", projectId),
-    ],
-  );
+  const [
+    { data: project },
+    { data: sets },
+    { data: panels },
+    { data: stages },
+    { data: weightRows },
+  ] = await Promise.all([
+    supabase.from("projects").select("*").eq("id", projectId).maybeSingle(),
+    supabase.from("production_sets").select("*").eq("project_id", projectId).order("set_number"),
+    supabase.from("panels").select("*").eq("project_id", projectId).order("sequence"),
+    supabase.from("panel_stages").select("*").eq("project_id", projectId),
+    supabase.from("panel_weights").select("*").eq("project_id", projectId),
+  ]);
 
   if (!project) throw new Error("Unable to load project. Please try again.");
 
@@ -115,14 +121,51 @@ export async function exportProjectWorkbook(projectId: string, filters: ExportFi
         Set: p.set_id ? formatSet(setById.get(p.set_id)) : "All sets",
         "Panel Name": p.name,
         "Part Number": p.part_number,
+        "ID Number": p.id_number ?? "",
         "Part Area (m2)": Number(p.part_area),
         "Part Weight (kg)": Number(p.part_weight),
+        "Weight Tolerance (±%)": effectiveTolerance(
+          p.weight_tolerance_pct,
+          project.weight_tolerance_pct,
+        ),
         Active: p.is_active ? "Yes" : "No",
         "Applicable Stages": (stages ?? [])
           .filter((s) => s.panel_id === p.id && s.is_applicable)
           .map((s) => STAGE_LABEL[s.stage])
           .join(", "),
       })),
+    },
+    {
+      name: "Weights",
+      rows: (weightRows ?? [])
+        .filter((w) => !filters.setId || w.set_id === filters.setId)
+        .filter((w) => !filters.panelId || w.panel_id === filters.panelId)
+        .flatMap((w) => {
+          const panel = panelById.get(w.panel_id);
+          if (!panel) return [];
+          const tol = effectiveTolerance(panel.weight_tolerance_pct, project.weight_tolerance_pct);
+          return (
+            [
+              ["Untrimmed Weight", w.untrimmed_weight],
+              ["Final Weight", w.final_weight],
+            ] as const
+          ).map(([type, actual]) => {
+            const c = compareWeight(panel.part_weight, actual, tol);
+            return {
+              Project: project.code,
+              Set: formatSet(setById.get(w.set_id)),
+              Panel: panel.name,
+              "Part Number": panel.part_number,
+              "ID Number": panel.id_number ?? "",
+              "Weight Type": type,
+              "Expected Weight (kg)": c.expected ?? "",
+              "Actual Weight (kg)": c.actual ?? "",
+              "Deviation (%)": c.deviationPct === null ? "" : formatDeviation(c.deviationPct),
+              "Tolerance (±%)": tol,
+              Result: verdictLabel(c),
+            };
+          });
+        }),
     },
     {
       name: "Production Status",
@@ -133,6 +176,7 @@ export async function exportProjectWorkbook(projectId: string, filters: ExportFi
           Set: formatSet(setById.get(s.set_id)),
           Panel: panel?.name ?? "",
           "Part Number": panel?.part_number ?? "",
+          "ID Number": panel?.id_number ?? "",
           Stage: STAGE_LABEL[s.stage],
           Status: STATUS_LABEL[s.status],
           "QC Status": s.qc_status ? QC_STATUS_LABEL[s.qc_status] : "",

@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { supabase } from "@/integrations/supabase/client";
+import { useAccess } from "@/lib/access";
 import { logAudit } from "@/lib/audit";
 import {
   PROJECT_STATUSES,
@@ -69,8 +70,9 @@ function ProjectOverview() {
   const [setFilter, setSetFilter] = useState("all");
   const navigate = useNavigate();
 
+  const { isAdmin } = useAccess();
   const archived = project?.status === "archived";
-  const canConfigure = !archived;
+  const canConfigure = !archived && isAdmin;
 
   async function changeStatus(status: string) {
     const { error } = await supabase
@@ -157,13 +159,13 @@ function ProjectOverview() {
               <Gauge className="mr-1 size-4" /> Production
             </Link>
           </Button>
-          {
+          {isAdmin && (
             <Button asChild size="sm" variant="secondary" className="rounded-full">
               <Link to="/projects/$projectId/panels" params={{ projectId }}>
                 <Settings2 className="mr-1 size-4" /> Configure
               </Link>
             </Button>
-          }
+          )}
           {
             <Button
               size="sm"
@@ -175,21 +177,23 @@ function ProjectOverview() {
               <FileSpreadsheet className="mr-1 size-4" /> Export
             </Button>
           }
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="sm" variant="secondary" aria-label="More actions">
-                <MoreHorizontal className="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onSelect={() => setDeleting(true)}
-              >
-                <Trash2 className="mr-2 size-4" /> Delete project
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {isAdmin && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="secondary" aria-label="More actions">
+                  <MoreHorizontal className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive"
+                  onSelect={() => setDeleting(true)}
+                >
+                  <Trash2 className="mr-2 size-4" /> Delete project
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       }
     >
@@ -202,7 +206,7 @@ function ProjectOverview() {
             </div>
             <div className="flex items-center gap-2">
               <ProjectStatusBadge status={project.status} />
-              {
+              {isAdmin ? (
                 <Select value={project.status} onValueChange={changeStatus}>
                   <SelectTrigger className="h-8 w-36 text-xs">
                     <SelectValue />
@@ -215,7 +219,9 @@ function ProjectOverview() {
                     ))}
                   </SelectContent>
                 </Select>
-              }
+              ) : (
+                <ProjectStatusBadge status={project.status} />
+              )}
             </div>
           </div>
           <dl className="mt-5 grid gap-4 sm:grid-cols-2">

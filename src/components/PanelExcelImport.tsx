@@ -43,13 +43,13 @@ function downloadTemplate() {
  * validation, and hands the valid rows to `onImport`. Manual entry stays available elsewhere.
  */
 export function PanelExcelImport({
-  existingParts,
+  existingIds,
   knownSets,
   onImport,
   triggerLabel = "Upload Excel",
 }: {
-  /** Part numbers that already exist in the project (case-insensitive duplicates are rejected). */
-  existingParts: string[];
+  /** ID Numbers already used in the project (case-insensitive duplicates are rejected). */
+  existingIds: string[];
   /** Set numbers that already exist; others in the file are reported as "will be added". */
   knownSets: number[];
   /** Must throw on failure. Called with the valid rows only. */
@@ -82,7 +82,7 @@ export function PanelExcelImport({
     setReading(true);
     setFileName(file.name);
     try {
-      const parsed = await parsePanelWorkbook(file, existingParts);
+      const parsed = await parsePanelWorkbook(file, existingIds);
       setResult(parsed);
     } catch (error) {
       setResult(null);
@@ -138,8 +138,9 @@ export function PanelExcelImport({
           <DialogHeader>
             <DialogTitle>Import panels from Excel</DialogTitle>
             <DialogDescription>
-              Upload an .xlsx file with the columns Panel Name, Set Number, Part Number, Part Area
-              and Part Weight. You will see a preview before anything is saved.
+              Upload an .xlsx file with the columns Panel Name, Set Number, Part Number, ID Number,
+              Part Area and Part Weight (ID Number is optional). You will see a preview before
+              anything is saved.
             </DialogDescription>
           </DialogHeader>
 
@@ -252,13 +253,19 @@ export function PanelExcelImport({
                     <table className="w-full text-sm">
                       <thead className="sticky top-0 bg-muted text-xs">
                         <tr>
-                          {["Row", "Panel Name", "Set", "Part Number", "Area", "Weight"].map(
-                            (h) => (
-                              <th key={h} className="px-3 py-1.5 text-left font-semibold">
-                                {h}
-                              </th>
-                            ),
-                          )}
+                          {[
+                            "Row",
+                            "Panel Name",
+                            "Set",
+                            "Part Number",
+                            "ID Number",
+                            "Area",
+                            "Weight",
+                          ].map((h) => (
+                            <th key={h} className="px-3 py-1.5 text-left font-semibold">
+                              {h}
+                            </th>
+                          ))}
                         </tr>
                       </thead>
                       <tbody className="divide-y">
@@ -268,6 +275,7 @@ export function PanelExcelImport({
                             <td className="px-3 py-1.5">{p.name}</td>
                             <td className="px-3 py-1.5">{formatSet(p.set_number)}</td>
                             <td className="px-3 py-1.5">{p.part_number}</td>
+                            <td className="px-3 py-1.5">{p.id_number || "—"}</td>
                             <td className="px-3 py-1.5">{p.part_area}</td>
                             <td className="px-3 py-1.5">{p.part_weight}</td>
                           </tr>

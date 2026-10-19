@@ -3,6 +3,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { Search, MoreVertical, Trash2, ExternalLink } from "lucide-react";
 
 import { AppShell, GlassPanel } from "@/components/AppShell";
+import { useAccess } from "@/lib/access";
 import { DeleteProjectDialog } from "@/components/DeleteProjectDialog";
 import { ProgressBar, ProjectStatusBadge } from "@/components/StatusBadge";
 import {
@@ -74,6 +75,7 @@ function ProjectsPage() {
     return list;
   }, [data, search, status, sort]);
 
+  const { isAdmin } = useAccess();
   const [toDelete, setToDelete] = useState<{ id: string; code: string; name: string } | null>(null);
 
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -165,13 +167,17 @@ function ProjectsPage() {
                         <ExternalLink className="mr-2 size-4" /> Open project
                       </Link>
                     </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      className="text-destructive focus:text-destructive"
-                      onSelect={() => setToDelete({ id: p.id, code: p.code, name: p.name })}
-                    >
-                      <Trash2 className="mr-2 size-4" /> Delete project
-                    </DropdownMenuItem>
+                    {isAdmin && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          className="text-destructive focus:text-destructive"
+                          onSelect={() => setToDelete({ id: p.id, code: p.code, name: p.name })}
+                        >
+                          <Trash2 className="mr-2 size-4" /> Delete project
+                        </DropdownMenuItem>
+                      </>
+                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>

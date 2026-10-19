@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { formatDeviation, verdictLabel, type WeightComparison } from "@/lib/weights";
 import {
   PROJECT_STATUS_CLASS,
   PROJECT_STATUS_LABEL,
@@ -76,5 +77,36 @@ export function ProgressBar({ value, className }: { value: number; className?: s
         style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
       />
     </div>
+  );
+}
+
+const WEIGHT_CLASS: Record<string, string> = {
+  ok: "bg-done text-done-foreground",
+  over: "bg-destructive/10 text-destructive",
+  under: "bg-destructive/10 text-destructive",
+  not_recorded: "bg-muted text-muted-foreground",
+  invalid_reference: "bg-muted text-muted-foreground",
+};
+
+/** Green within tolerance, red when over/under, grey when it cannot be judged. */
+export function WeightBadge({
+  comparison,
+  className,
+}: {
+  comparison: WeightComparison;
+  className?: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-semibold whitespace-nowrap",
+        WEIGHT_CLASS[comparison.verdict],
+        className,
+      )}
+    >
+      <span className="size-1.5 rounded-full bg-current" />
+      {comparison.deviationPct !== null ? `${formatDeviation(comparison.deviationPct)} · ` : ""}
+      {verdictLabel(comparison)}
+    </span>
   );
 }

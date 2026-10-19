@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Layers, Loader2, Plus, Save, Wand2 } from "lucide-react";
@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { supabase } from "@/integrations/supabase/client";
 import { logAudit } from "@/lib/audit";
+import { useAccess } from "@/lib/access";
 import { PanelExcelImport } from "@/components/PanelExcelImport";
 import { STAGES, formatSet } from "@/lib/domain";
 import type { ImportedPanel } from "@/lib/panel-import";
@@ -59,19 +60,32 @@ function PanelConfig() {
   const { data: stages } = usePanelStages(projectId);
   const { data: sets } = useSets(projectId);
 
+  const { ready, isAdmin } = useAccess();
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (ready && !isAdmin) {
+      toast.error("Only Admin can configure panels.");
+      navigate({ to: "/projects/$projectId", params: { projectId }, replace: true });
+    }
+  }, [ready, isAdmin, navigate, projectId]);
+
   const [busy, setBusy] = useState<string | null>(null);
+  const [masterStages, setMasterStages] = useState<string[] | null>(null);
+  const [useForNew, setUseForNew] = useState(true);
+  const [toleranceInput, setToleranceInput] = useState<string | null>(null);
   const [confirmGenerate, setConfirmGenerate] = useState(false);
   const [newSetInput, setNewSetInput] = useState("");
   const [newPanel, setNewPanel] = useState({
     set_number: "",
     name: "",
     part_number: "",
+    id_number: "",
     part_area: "",
     part_weight: "",
   });
 
   const archived = project?.status === "archived";
-  const canEdit = !archived;
+  const canEdit = !archived && isAdmin;
 
   function stageOf(panelId: string, stage: string) {
     return (stages ?? []).find((s) => s.panel_id === panelId && s.stage === stage);
@@ -80,6 +94,8 @@ function PanelConfig() {
   type PanelPatch = {
     name?: string;
     part_number?: string;
+    id_number?: string | null;
+    weight_tolerance_pct?: number | null;
     part_area?: number;
     part_weight?: number;
     sequence?: number;
@@ -93,7 +109,7 @@ function PanelConfig() {
     if (error) {
       toast.error(
         error.code === "23505"
-          ? "That part number is already used by another panel in this project."
+          ? "That ID Number is already used by another panel in this project."
           : "We couldn't save this change. Please try again.",
       );
       await queryClient.invalidateQueries({ queryKey: ["panels", projectId] });
@@ -130,7 +146,8 @@ function PanelConfig() {
   }
 
   const activeSets = sets ?? [];
-  const existingParts = (panels ?? []).filter((p) => p.is_active).map((p) => p.part_number);
+  const existingIds = (panels ?? []).filter((p) => p.is_active).map((p) => p.id_number ?? "");
+  const master = masterStages ?? project?.default_stages ?? STAGES.map((st) => st.value as string);
   const chosenSet =
     newPanel.set_number || (activeSets.length === 1 ? String(activeSets[0]!.set_number) : "");
 
@@ -149,8 +166,9 @@ function PanelConfig() {
       toast.error("Please enter a part number.");
       return;
     }
-    if (existingParts.some((p) => p.trim().toLowerCase() === part.toLowerCase())) {
-      toast.error(`Part number ${part} already exists in this project.`);
+    const idn = newPanel.id_number.trim();
+    if (idn && existingIds.some((x) => x.trim().toLowerCase() === idn.toLowerCase())) {
+      toast.error(`ID Number ${idn} already exists in this project.`);
       return;
     }
     setBusy("new");
@@ -162,6 +180,7 @@ function PanelConfig() {
           name,
           set_number: Number(chosenSet),
           part_number: part,
+          id_number: idn || null,
           part_area: newPanel.part_area === "" ? 0 : Number(newPanel.part_area),
           part_weight: newPanel.part_weight === "" ? 0 : Number(newPanel.part_weight),
         },
@@ -186,6 +205,7 @@ function PanelConfig() {
       set_number: chosenSet,
       name: "",
       part_number: "",
+      id_number: "",
       part_area: "",
       part_weight: "",
     });
@@ -201,6 +221,7 @@ function PanelConfig() {
         name: r.name,
         set_number: r.set_number,
         part_number: r.part_number,
+        id_number: r.id_number || null,
         part_area: r.part_area,
         part_weight: r.part_weight,
       })),
@@ -253,6 +274,64 @@ function PanelConfig() {
     setNewSetInput("");
     await queryClient.invalidateQueries();
     toast.success(`${formatSet(n)} added.`);
+  }
+
+  async function applyStages(panelIds: string[] | null) {
+    if (master.length === 0) {
+      toast.error("Select at least one stage first.");
+      return;
+    }
+    setBusy(panelIds ? `apply-${panelIds[0]}` : "apply-all");
+    const { data, error } = await supabase.rpc("apply_stages_to_panels", {
+      p_project_id: projectId,
+      p_stages: master,
+      p_panel_ids: panelIds,
+      p_save_default: panelIds ? false : useForNew,
+    });
+    setBusy(null);
+    if (error) {
+      toast.error(
+        error.code === "P0001" && error.message
+          ? error.message
+          : "We couldn't apply the stages. Nothing was changed.",
+      );
+      return;
+    }
+    const r = data as { panels: number; records_created: number; kept_with_work: number };
+    await logAudit(
+      "Apply Stages",
+      `Applied ${master.length} stages to ${panelIds ? "1 panel" : `${r.panels} panels`}`,
+      projectId,
+    );
+    await queryClient.invalidateQueries();
+    toast.success(
+      `Stages applied to ${r.panels} panel${r.panels === 1 ? "" : "s"}. ${r.records_created} new production records.` +
+        (r.kept_with_work > 0
+          ? ` ${r.kept_with_work} records with recorded work were kept as they were.`
+          : ""),
+    );
+  }
+
+  async function saveTolerance() {
+    const tol = Number(toleranceInput);
+    if ((toleranceInput ?? "").trim() === "" || !Number.isFinite(tol) || tol < 0 || tol > 100) {
+      toast.error("Weight tolerance must be a number from 0 to 100.");
+      return;
+    }
+    setBusy("tolerance");
+    const { error } = await supabase
+      .from("projects")
+      .update({ weight_tolerance_pct: tol })
+      .eq("id", projectId);
+    setBusy(null);
+    if (error) {
+      toast.error("We couldn't save the tolerance. Please try again.");
+      return;
+    }
+    await logAudit("Update Tolerance", `Weight tolerance set to ±${tol}%`, projectId);
+    setToleranceInput(null);
+    await queryClient.invalidateQueries();
+    toast.success(`Weight tolerance set to ±${tol}%.`);
   }
 
   async function generate() {
@@ -341,12 +420,12 @@ function PanelConfig() {
               </p>
             </div>
             <PanelExcelImport
-              existingParts={existingParts}
+              existingIds={existingIds}
               knownSets={activeSets.map((x) => x.set_number)}
               onImport={importPanels}
             />
           </div>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-7">
             <div className="space-y-1.5">
               <Label>Set</Label>
               <Select
@@ -377,6 +456,14 @@ function PanelConfig() {
               <Input
                 value={newPanel.part_number}
                 onChange={(e) => setNewPanel({ ...newPanel, part_number: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>ID Number</Label>
+              <Input
+                value={newPanel.id_number}
+                placeholder="optional"
+                onChange={(e) => setNewPanel({ ...newPanel, id_number: e.target.value })}
               />
             </div>
             <div className="space-y-1.5">
@@ -439,6 +526,96 @@ function PanelConfig() {
         </GlassPanel>
       )}
 
+      {canEdit && (
+        <GlassPanel className="mt-4 p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-bold tracking-tight">Apply to All Panels</h2>
+              <p className="text-xs text-muted-foreground">
+                Pick the stages once and apply them to every panel in every set. You can still
+                change any single panel below; that never affects the others.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setMasterStages(STAGES.map((st) => st.value as string))}
+              >
+                Select all
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setMasterStages([])}>
+                Clear
+              </Button>
+              <Button size="sm" disabled={busy === "apply-all"} onClick={() => applyStages(null)}>
+                {busy === "apply-all" ? <Loader2 className="mr-1 size-4 animate-spin" /> : null}
+                Apply to all {(panels ?? []).filter((p) => p.is_active).length} panels
+              </Button>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {STAGES.map((stage) => {
+              const on = master.includes(stage.value);
+              return (
+                <button
+                  key={stage.value}
+                  type="button"
+                  onClick={() =>
+                    setMasterStages(
+                      on ? master.filter((x) => x !== stage.value) : [...master, stage.value],
+                    )
+                  }
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                    on
+                      ? "prism text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {stage.label}
+                </button>
+              );
+            })}
+          </div>
+          <label className="mt-3 flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={useForNew}
+              onChange={(e) => setUseForNew(e.target.checked)}
+            />
+            Save this selection and use it for panels added later
+          </label>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Records that already have work (status, QC status or remarks) are never changed or
+            removed. Untouched records of removed stages are marked Not Applicable.
+          </p>
+          <div className="mt-4 flex flex-wrap items-end gap-2 border-t pt-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="proj-tol">Weight tolerance (± %) for this project</Label>
+              <Input
+                id="proj-tol"
+                type="number"
+                min={0}
+                max={100}
+                step="0.1"
+                className="w-40"
+                value={toleranceInput ?? String(Number(project?.weight_tolerance_pct ?? 5))}
+                onChange={(e) => setToleranceInput(e.target.value)}
+              />
+            </div>
+            <Button
+              variant="secondary"
+              disabled={toleranceInput === null || busy === "tolerance"}
+              onClick={saveTolerance}
+            >
+              Save tolerance
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              A panel can override this with its own tolerance below.
+            </p>
+          </div>
+        </GlassPanel>
+      )}
+
       <div className="mt-4 space-y-4">
         {groups.map((group) => (
           <div key={group.key} className="space-y-3">
@@ -456,7 +633,7 @@ function PanelConfig() {
             </div>
             {group.panels.map((panel) => (
               <GlassPanel key={panel.id} className="p-5">
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-7">
                   <div className="space-y-1.5">
                     <Label>Panel name</Label>
                     <Input
@@ -483,6 +660,22 @@ function PanelConfig() {
                           panel.id,
                           { part_number: e.target.value },
                           `Updated part number for ${panel.name}`,
+                        )
+                      }
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>ID Number</Label>
+                    <Input
+                      defaultValue={panel.id_number ?? ""}
+                      placeholder="optional"
+                      disabled={!canEdit}
+                      onBlur={(e) =>
+                        e.target.value.trim() !== (panel.id_number ?? "") &&
+                        savePanel(
+                          panel.id,
+                          { id_number: e.target.value.trim() || null },
+                          `Updated ID Number for ${panel.name}`,
                         )
                       }
                     />
@@ -522,6 +715,32 @@ function PanelConfig() {
                     />
                   </div>
                   <div className="space-y-1.5">
+                    <Label>Tolerance (±%)</Label>
+                    <Input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step="0.1"
+                      defaultValue={panel.weight_tolerance_pct ?? ""}
+                      placeholder={`${Number(project?.weight_tolerance_pct ?? 5)} (project)`}
+                      disabled={!canEdit}
+                      onBlur={(e) => {
+                        const raw = e.target.value.trim();
+                        const next = raw === "" ? null : Number(raw);
+                        if (next !== null && (!Number.isFinite(next) || next < 0 || next > 100)) {
+                          toast.error("Tolerance must be a number from 0 to 100.");
+                          return;
+                        }
+                        if (next !== (panel.weight_tolerance_pct ?? null))
+                          savePanel(
+                            panel.id,
+                            { weight_tolerance_pct: next },
+                            `Updated weight tolerance for ${panel.name}`,
+                          );
+                      }}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
                     <Label>Sequence</Label>
                     <Input
                       type="number"
@@ -558,9 +777,21 @@ function PanelConfig() {
                       {panel.is_active ? "Active" : "Inactive (history preserved)"}
                     </Label>
                   </div>
-                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                    <Save className="size-3.5" /> Changes save when you leave a field
-                  </span>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {canEdit && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy === `apply-${panel.id}`}
+                        onClick={() => applyStages([panel.id])}
+                      >
+                        Use the stage selection above for this panel
+                      </Button>
+                    )}
+                    <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <Save className="size-3.5" /> Changes save when you leave a field
+                    </span>
+                  </div>
                 </div>
 
                 <div className="mt-4">
