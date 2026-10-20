@@ -8,8 +8,8 @@ import { supabase } from "@/integrations/supabase/client";
  * token (app_metadata.app_role), which can only be set from the Supabase dashboard / SQL.
  * The browser never decides the role: the database enforces it on every request.
  */
-export const READER_EMAIL = "tracker-reader@example.com";
-export const ADMIN_EMAIL = "tracker-admin@example.com";
+export const READER_EMAIL = "projectsreader@triovision.com";
+export const ADMIN_EMAIL = "projectsadmin@triovision.com";
 
 export type AccessRole = "reader" | "admin";
 
