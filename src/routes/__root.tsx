@@ -13,6 +13,8 @@ import { useEffect, type ReactNode } from "react";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { Toaster } from "@/components/ui/sonner";
+import { COMPANY_NAME, SITE_DESCRIPTION, pageTitle } from "@/lib/brand";
+import { THEME_SCRIPT, useTheme } from "@/lib/theme";
 
 function NotFoundComponent() {
   return (
@@ -79,20 +81,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Production Tracker" },
-      {
-        name: "description",
-        content:
-          "Production Tracker — manage projects, sets, panels, production stages and progress.",
-      },
-      { property: "og:title", content: "Production Tracker" },
-      {
-        property: "og:description",
-        content:
-          "Production Tracker — manage projects, sets, panels, production stages and progress.",
-      },
+      { title: pageTitle("Production Tracker") },
+      { name: "description", content: SITE_DESCRIPTION },
+      { name: "application-name", content: "TrioVision Production Tracker" },
+      { name: "theme-color", content: "#0b1b3a" },
+      { property: "og:title", content: pageTitle("Production Tracker") },
+      { property: "og:description", content: SITE_DESCRIPTION },
+      { property: "og:site_name", content: COMPANY_NAME },
       { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
+      { property: "og:image", content: "/trio-wordmark.png" },
+      { name: "twitter:card", content: "summary" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
@@ -102,8 +100,13 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         rel: "stylesheet",
         href: "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap",
       },
-      { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
+      { rel: "icon", href: "/favicon.ico", sizes: "any" },
+      { rel: "icon", type: "image/png", sizes: "32x32", href: "/favicon-32x32.png" },
+      { rel: "icon", type: "image/png", sizes: "16x16", href: "/favicon-16x16.png" },
+      { rel: "apple-touch-icon", sizes: "180x180", href: "/apple-touch-icon.png" },
+      { rel: "manifest", href: "/site.webmanifest" },
     ],
+    scripts: [{ children: THEME_SCRIPT }],
   }),
   shellComponent: RootShell,
   component: RootComponent,
@@ -113,7 +116,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
       </head>
@@ -128,10 +131,11 @@ function RootShell({ children }: { children: ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
+  const { theme } = useTheme();
   return (
     <QueryClientProvider client={queryClient}>
       <Outlet />
-      <Toaster position="top-right" richColors />
+      <Toaster position="top-right" richColors theme={theme} />
     </QueryClientProvider>
   );
 }

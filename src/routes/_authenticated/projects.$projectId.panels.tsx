@@ -33,11 +33,12 @@ import { PanelExcelImport } from "@/components/PanelExcelImport";
 import { STAGES, formatSet } from "@/lib/domain";
 import type { ImportedPanel } from "@/lib/panel-import";
 import { usePanelStages, usePanels, useProject, useSets } from "@/lib/queries";
+import { pageTitle } from "@/lib/brand";
 
 export const Route = createFileRoute("/_authenticated/projects/$projectId/panels")({
   head: () => ({
     meta: [
-      { title: "Panel Configuration — Production Tracker" },
+      { title: pageTitle("Panel Configuration") },
       {
         name: "description",
         content: "Define panels, part details and the production stages that apply to each panel.",

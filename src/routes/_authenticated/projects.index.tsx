@@ -26,11 +26,12 @@ import {
 
 import { PROJECT_STATUSES, countryLabel, formatDate } from "@/lib/domain";
 import { useProjects } from "@/lib/queries";
+import { pageTitle } from "@/lib/brand";
 
 export const Route = createFileRoute("/_authenticated/projects/")({
   head: () => ({
     meta: [
-      { title: "Projects — Production Tracker" },
+      { title: pageTitle("Projects") },
       {
         name: "description",
         content: "Search, filter and open every production project you have access to.",

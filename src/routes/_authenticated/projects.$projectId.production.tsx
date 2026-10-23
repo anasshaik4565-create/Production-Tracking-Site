@@ -53,11 +53,12 @@ import {
   useSets,
   useStageHistory,
 } from "@/lib/queries";
+import { pageTitle } from "@/lib/brand";
 
 export const Route = createFileRoute("/_authenticated/projects/$projectId/production")({
   head: () => ({
     meta: [
-      { title: "Production Dashboard — Production Tracker" },
+      { title: pageTitle("Production Dashboard") },
       {
         name: "description",
         content:

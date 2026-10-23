@@ -22,11 +22,12 @@ import { logAudit } from "@/lib/audit";
 import { PanelExcelImport } from "@/components/PanelExcelImport";
 import { COUNTRIES, STAGES, formatSet } from "@/lib/domain";
 import type { ImportedPanel } from "@/lib/panel-import";
+import { pageTitle } from "@/lib/brand";
 
 export const Route = createFileRoute("/_authenticated/projects/new")({
   head: () => ({
     meta: [
-      { title: "Create Project — Production Tracker" },
+      { title: pageTitle("Create Project") },
       {
         name: "description",
         content: "Set up a project, its sets, panels and applicable production stages.",

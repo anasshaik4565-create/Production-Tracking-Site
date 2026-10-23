@@ -37,11 +37,12 @@ import {
 } from "@/lib/domain";
 import { exportProjectWorkbook } from "@/lib/excel";
 import { usePanels, useProject, useProjectProgress, useSets } from "@/lib/queries";
+import { pageTitle } from "@/lib/brand";
 
 export const Route = createFileRoute("/_authenticated/projects/$projectId/")({
   head: () => ({
     meta: [
-      { title: "Project Overview — Production Tracker" },
+      { title: pageTitle("Project Overview") },
       {
         name: "description",
         content:

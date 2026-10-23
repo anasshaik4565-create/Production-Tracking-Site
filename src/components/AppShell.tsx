@@ -1,21 +1,47 @@
-import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BarChart3,
   Bell,
-  Factory,
   FileSpreadsheet,
   Folders,
   Gauge,
   History,
   LayoutDashboard,
+  Info,
   LogOut,
   Menu,
+  Sparkles,
 } from "lucide-react";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { supabase } from "@/integrations/supabase/client";
 import { QcBadge } from "@/components/StatusBadge";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { clearAssistantStorage } from "@/lib/assistant/storage";
+import {
+  ASSISTANT_NAME,
+  COMPANY_ADDRESS,
+  COMPANY_NAME,
+  COMPANY_SHORT,
+  COMPANY_SUFFIX,
+} from "@/lib/brand";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { QC_STATUS_LABEL, STAGE_LABEL, STATUS_LABEL, formatSet, formatTime } from "@/lib/domain";
 import { signOutAll, useAccess } from "@/lib/access";
 import { cn } from "@/lib/utils";
@@ -40,6 +66,7 @@ const NAV_GROUPS = [
     label: "Insights",
     items: [
       { to: "/analytics", label: "Analytics", icon: BarChart3 },
+      { to: "/assistant", label: ASSISTANT_NAME, icon: Sparkles },
       { to: "/exports", label: "Exports", icon: FileSpreadsheet },
     ],
   },
@@ -76,21 +103,74 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
+/** The company logo on a white tile so it reads clearly on the dark sidebar in both themes. */
+export function LogoTile({ className }: { className?: string }) {
+  return (
+    <span
+      className={cn(
+        "grid shrink-0 place-items-center rounded-lg bg-white p-1 shadow-sm ring-1 ring-black/10",
+        className ?? "size-11",
+      )}
+    >
+      <img
+        src="/trio-logo.png"
+        alt={`${COMPANY_NAME} logo`}
+        width={369}
+        height={356}
+        className="h-full w-full object-contain"
+      />
+    </span>
+  );
+}
+
 function Brand() {
   return (
-    <div className="mb-6 flex items-center gap-3 px-2">
-      <div className="grid size-9 place-items-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
-        <Factory className="size-5" />
-      </div>
-      <div>
-        <p className="text-[15px] leading-none font-bold tracking-tight text-sidebar-accent-foreground">
-          Production Tracker
+    <div className="mb-6 flex items-center gap-3 px-1" title={COMPANY_NAME}>
+      <LogoTile />
+      <div className="min-w-0">
+        <p className="text-[17px] leading-none font-bold tracking-tight text-sidebar-accent-foreground">
+          {COMPANY_SHORT}
         </p>
-        <p className="mt-1 text-[10px] font-medium tracking-[0.16em] text-sidebar-foreground/55 uppercase">
-          Factory operations
+        <p className="mt-1 text-[10.5px] leading-tight font-medium text-sidebar-foreground/70">
+          {COMPANY_SUFFIX}
         </p>
       </div>
     </div>
+  );
+}
+
+function AboutDialog() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-4 flex items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+      >
+        <Info className="size-4 shrink-0" />
+        About {COMPANY_SHORT}
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <div className="mb-2 flex items-center gap-3">
+              <LogoTile className="size-14" />
+              <div>
+                <DialogTitle className="text-left">{COMPANY_NAME}</DialogTitle>
+                <DialogDescription className="text-left">Production Tracker</DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+          <div className="text-sm">
+            <p className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+              Company address
+            </p>
+            <p className="mt-1">{COMPANY_ADDRESS}</p>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -99,11 +179,38 @@ function AccessChip() {
   const { role, ready } = useAccess();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [eraseError, setEraseError] = useState("");
 
   // Session ended (sign-out in another tab, expired token): go back to the login page.
   useEffect(() => {
     if (ready && !role) navigate({ to: "/login", replace: true });
   }, [ready, role, navigate]);
+
+  async function finishLogout() {
+    await signOutAll();
+    queryClient.clear();
+    navigate({ to: "/login", replace: true });
+  }
+
+  /** Erase the assistant chats first, verify it, and only then sign out. */
+  async function logoutAndClear() {
+    if (busy) return;
+    setBusy(true);
+    setEraseError("");
+    const result = clearAssistantStorage();
+    if (!result.ok) {
+      setBusy(false);
+      setEraseError(
+        `${result.error ?? "The chat history could not be erased."} Your chat history has NOT been confirmed as erased.`,
+      );
+      return;
+    }
+    await finishLogout();
+    setBusy(false);
+    setConfirmOpen(false);
+  }
 
   if (!role) return null;
   return (
@@ -121,15 +228,45 @@ function AccessChip() {
       <button
         aria-label="Sign out"
         title="Sign out"
-        onClick={async () => {
-          await signOutAll();
-          queryClient.clear();
-          navigate({ to: "/login", replace: true });
+        onClick={() => {
+          setEraseError("");
+          setConfirmOpen(true);
         }}
         className="grid size-9 place-items-center rounded-lg border bg-card text-muted-foreground shadow-sm hover:text-foreground"
       >
         <LogOut className="size-4" />
       </button>
+
+      <AlertDialog open={confirmOpen} onOpenChange={(o) => !busy && setConfirmOpen(o)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Logging Out – AI Chat History Will Be Erased</AlertDialogTitle>
+            <AlertDialogDescription>
+              Logging out will permanently clear your Trio AI Assistant chat history for this
+              session. This action cannot be undone. Do you want to continue?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {eraseError && (
+            <p
+              role="alert"
+              className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            >
+              {eraseError}
+            </p>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+            <Button variant="destructive" onClick={logoutAndClear} disabled={busy}>
+              {eraseError ? "Try again" : "Logout and Clear History"}
+            </Button>
+            {eraseError && (
+              <Button variant="outline" onClick={finishLogout} disabled={busy}>
+                Logout anyway
+              </Button>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -222,16 +359,12 @@ export function AppShell({
   actions?: ReactNode;
   children: ReactNode;
 }) {
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
-
   return (
     <div className="min-h-screen w-full bg-background text-foreground">
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col bg-sidebar p-4 text-sidebar-foreground lg:flex">
         <Brand />
         <NavLinks />
-        <p className="mt-4 px-3 text-[11px] text-sidebar-foreground/45">
-          Panel production tracking
-        </p>
+        <AboutDialog />
       </aside>
 
       <div className="lg:pl-64">
@@ -250,17 +383,22 @@ export function AppShell({
                 <SheetTitle className="sr-only">Navigation</SheetTitle>
                 <Brand />
                 <NavLinks />
+                <AboutDialog />
               </SheetContent>
             </Sheet>
+            <LogoTile className="size-9 lg:hidden" />
             <div className="min-w-0">
               <p className="truncate text-[11px] font-medium tracking-[0.12em] text-muted-foreground uppercase">
-                {breadcrumb ?? `Production Tracker · ${pathname.split("/")[1] || "home"}`}
+                {[COMPANY_NAME, breadcrumb?.replace(/^Production Tracker\s*·\s*/, "")]
+                  .filter(Boolean)
+                  .join(" · ")}
               </p>
               <h1 className="truncate text-xl font-bold tracking-tight lg:text-2xl">{title}</h1>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {actions}
+            <ThemeToggle />
             <Notifications />
             <AccessChip />
           </div>

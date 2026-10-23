@@ -2,6 +2,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import type { Session } from "@supabase/supabase-js";
 
 import { supabase } from "@/integrations/supabase/client";
+import { clearAssistantStorage } from "@/lib/assistant/storage";
 
 /**
  * Reader and Admin are two separate Supabase logins. The role is read from the signed
@@ -25,6 +26,11 @@ let started = false;
 const listeners = new Set<() => void>();
 
 function publish(next: AuthState) {
+  // Whenever the signed-in user changes or the session ends, assistant chats are erased so
+  // nothing can carry over to another login (Reader <-> Admin) or a later session.
+  if ((state.session?.user.id ?? null) !== (next.session?.user.id ?? null) && state.ready) {
+    clearAssistantStorage();
+  }
   state = next;
   listeners.forEach((l) => l());
 }
@@ -32,7 +38,11 @@ function publish(next: AuthState) {
 export function startAuth() {
   if (started || typeof window === "undefined") return;
   started = true;
-  supabase.auth.getSession().then(({ data }) => publish({ session: data.session, ready: true }));
+  supabase.auth.getSession().then(({ data }) => {
+    // No valid session when the page loads (expired / signed out elsewhere): erase any chats left over.
+    if (!data.session) clearAssistantStorage();
+    publish({ session: data.session, ready: true });
+  });
   supabase.auth.onAuthStateChange((_event, session) => publish({ session, ready: true }));
 }
 
@@ -58,6 +68,7 @@ export function useAccess() {
   const role = roleFromSession(snapshot.session);
   return {
     ready: snapshot.ready,
+    userId: snapshot.session?.user.id ?? null,
     role,
     isAdmin: role === "admin",
     isReader: role === "reader",

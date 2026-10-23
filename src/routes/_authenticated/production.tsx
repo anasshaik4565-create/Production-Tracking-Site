@@ -6,11 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { countryLabel } from "@/lib/domain";
 import { useProjects } from "@/lib/queries";
+import { pageTitle } from "@/lib/brand";
 
 export const Route = createFileRoute("/_authenticated/production")({
   head: () => ({
     meta: [
-      { title: "Production — Production Tracker" },
+      { title: pageTitle("Production") },
       { name: "description", content: "Pick a project to update its panel and stage production." },
       { property: "og:title", content: "Production — Production Tracker" },
       {

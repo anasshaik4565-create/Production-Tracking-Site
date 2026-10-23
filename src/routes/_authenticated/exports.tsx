@@ -16,11 +16,12 @@ import {
 import { QC_STATUSES, STAGES, STATUSES, formatSet } from "@/lib/domain";
 import { exportProjectWorkbook } from "@/lib/excel";
 import { usePanels, useProjects, useSets } from "@/lib/queries";
+import { pageTitle } from "@/lib/brand";
 
 export const Route = createFileRoute("/_authenticated/exports")({
   head: () => ({
     meta: [
-      { title: "Excel Exports — Production Tracker" },
+      { title: pageTitle("Excel Exports") },
       {
         name: "description",
         content: "Download .xlsx workbooks for a whole project or a filtered set, panel or stage.",

@@ -13,11 +13,12 @@ import {
 } from "@/components/ui/select";
 import { QC_STATUSES, STAGE_LABEL, STATUSES, formatSet } from "@/lib/domain";
 import { useProjectProgress, useProjects } from "@/lib/queries";
+import { pageTitle } from "@/lib/brand";
 
 export const Route = createFileRoute("/_authenticated/analytics")({
   head: () => ({
     meta: [
-      { title: "Analytics — Production Tracker" },
+      { title: pageTitle("Analytics") },
       {
         name: "description",
         content: "Progress and status analytics by project, set, panel and production stage.",

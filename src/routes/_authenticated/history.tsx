@@ -30,11 +30,12 @@ import {
 } from "@/lib/domain";
 import { exportCurrentView } from "@/lib/excel";
 import { useProjects } from "@/lib/queries";
+import { pageTitle } from "@/lib/brand";
 
 export const Route = createFileRoute("/_authenticated/history")({
   head: () => ({
     meta: [
-      { title: "Production History — Production Tracker" },
+      { title: pageTitle("Production History") },
       {
         name: "description",
         content:

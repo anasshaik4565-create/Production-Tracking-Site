@@ -20,11 +20,12 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAccess } from "@/lib/access";
 import { STAGE_LABEL, STATUS_LABEL, countryLabel, formatDateTime, formatSet } from "@/lib/domain";
 import { useProjects } from "@/lib/queries";
+import { pageTitle } from "@/lib/brand";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({
     meta: [
-      { title: "Dashboard — Production Tracker" },
+      { title: pageTitle("Dashboard") },
       {
         name: "description",
         content: "Live overview of projects, production progress and recent shop-floor activity.",
