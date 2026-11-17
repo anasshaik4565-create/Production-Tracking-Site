@@ -5,7 +5,13 @@
  *  - pending work = Pending + WIP + Hold + Rework
  *  - weight deviation % = (actual − expected) / expected × 100, judged against the tolerance
  */
-import { compareWeight, effectiveTolerance, type WeightVerdict } from "@/lib/weights";
+import {
+  compareWeight,
+  effectiveTolerance,
+  summarizeSetWeights,
+  weightDifference,
+  type WeightVerdict,
+} from "@/lib/weights";
 
 export type PanelLite = {
   id: string;
@@ -120,6 +126,7 @@ export type WeightRow = {
   weight_type: "Untrimmed Weight" | "Final Weight";
   expected_kg: number | null;
   actual_kg: number | null;
+  difference_kg: number | null;
   deviation_pct: number | null;
   tolerance_pct: number;
   verdict: WeightVerdict;
@@ -154,6 +161,7 @@ export function weightRows(
           weight_type: type,
           expected_kg: c.expected,
           actual_kg: c.actual,
+          difference_kg: weightDifference(p.part_weight, actual),
           deviation_pct: c.deviationPct,
           tolerance_pct: tol,
           verdict: c.verdict,
@@ -214,4 +222,59 @@ export function periodRange(period: Period, now: Date): { from: Date; to: Date }
     default:
       return { from: new Date(now.getTime() - 30 * 86400000), to: now };
   }
+}
+
+/**
+ * Final-weight totals per set and for the whole project (each panel counted once per set it is made in).
+ * Only Final Weight is used; a set with missing Final Weights is reported as incomplete, never as zero.
+ */
+export function finalWeightTotals(
+  panels: PanelLite[],
+  sets: SetLite[],
+  weights: WeightRec[],
+  projectTolerance: number | string | null | undefined,
+) {
+  const activeSets = sets.filter((x) => x.is_active).sort((a, b) => a.set_number - b.set_number);
+  const all: { expected: unknown; finalWeight: unknown }[] = [];
+  const bySet = activeSets.map((set) => {
+    const items = panels
+      .filter((p) => p.is_active && (!p.set_id || p.set_id === set.id))
+      .map((p) => ({
+        expected: p.part_weight,
+        finalWeight:
+          weights.find((w) => w.panel_id === p.id && w.set_id === set.id)?.final_weight ?? null,
+      }));
+    all.push(...items);
+    const r = summarizeSetWeights(items, projectTolerance);
+    return {
+      set_number: set.set_number,
+      panels: r.panels,
+      panels_with_final_weight: r.withFinal,
+      panels_missing_final_weight: r.missingFinal,
+      total_expected_kg: r.totalExpected,
+      total_recorded_final_kg: r.withFinal === 0 ? null : r.recordedFinalTotal,
+      complete: r.complete,
+      difference_kg: r.difference,
+      deviation_pct: r.deviationPct,
+      verdict: r.verdict,
+      note: r.complete
+        ? undefined
+        : "Incomplete: some Final Weights are not recorded, so no confirmed set deviation.",
+    };
+  });
+  const p = summarizeSetWeights(all, projectTolerance);
+  return {
+    bySet,
+    project: {
+      panel_in_set_entries: p.panels,
+      with_final_weight: p.withFinal,
+      missing_final_weight: p.missingFinal,
+      total_expected_kg: p.totalExpected,
+      total_recorded_final_kg: p.withFinal === 0 ? null : p.recordedFinalTotal,
+      complete: p.complete,
+      difference_kg: p.difference,
+      deviation_pct: p.deviationPct,
+      verdict: p.verdict,
+    },
+  };
 }

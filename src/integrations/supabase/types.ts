@@ -540,6 +540,14 @@ export type Database = {
       }
       can_configure: { Args: { _project_id: string }; Returns: boolean }
       can_update_production: { Args: { _project_id: string }; Returns: boolean }
+      reorder_panel_stages: {
+        Args: { p_order: string[]; p_panel_id: string }
+        Returns: undefined
+      }
+      bulk_update_stage_status: {
+        Args: { p_dry_run?: boolean; p_project_id: string; p_stage: string; p_status: string }
+        Returns: Json
+      }
       apply_stages_to_panels: {
         Args: {
           p_panel_ids?: string[] | null

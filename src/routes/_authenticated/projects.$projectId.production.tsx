@@ -2,7 +2,13 @@ import { useMemo, useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { FileSpreadsheet, History as HistoryIcon, Loader2, MessageSquare } from "lucide-react";
+import {
+  FileSpreadsheet,
+  History as HistoryIcon,
+  ListChecks,
+  Loader2,
+  MessageSquare,
+} from "lucide-react";
 
 import { AppShell, GlassPanel } from "@/components/AppShell";
 import { ProgressBar, QcBadge, StatusBadge, WeightBadge } from "@/components/StatusBadge";
@@ -29,7 +35,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { supabase } from "@/integrations/supabase/client";
 import { logAudit } from "@/lib/audit";
 import { useAccess } from "@/lib/access";
+import { BulkStatusDialog } from "@/components/BulkStatusDialog";
 import { PanelWeightsCard } from "@/components/PanelWeightsCard";
+import { deriveColumnOrder, panelFullOrder } from "@/lib/stages";
 import { compareWeight, effectiveTolerance, WEIGHT_STAGE } from "@/lib/weights";
 import {
   QC_STATUSES,
@@ -111,6 +119,10 @@ function ProductionDashboard() {
   const [remarks, setRemarks] = useState("");
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [bulk, setBulk] = useState<{ open: boolean; stage: string | null }>({
+    open: false,
+    stage: null,
+  });
   const [untrimmedInput, setUntrimmedInput] = useState("");
   const [finalInput, setFinalInput] = useState("");
 
@@ -145,6 +157,17 @@ function ProductionDashboard() {
     }
     return map;
   }, [rows, panels]);
+
+  // Grid columns follow the saved execution order (not a fixed list). Stages are identified by id.
+  const columnStages = useMemo(() => {
+    const shown = new Set(
+      (panels ?? [])
+        .filter((p) => p.is_active && (!p.set_id || p.set_id === activeSetId))
+        .map((p) => p.id),
+    );
+    const order = deriveColumnOrder((stages ?? []).filter((r) => shown.has(r.panel_id)));
+    return order.map((v) => STAGES.find((s) => s.value === v)!).filter(Boolean);
+  }, [stages, panels, activeSetId]);
 
   const applicable = (panelId: string, stage: string) =>
     (stages ?? []).some((s) => s.panel_id === panelId && s.stage === stage && s.is_applicable);
@@ -275,6 +298,15 @@ function ProductionDashboard() {
               Overview
             </Link>
           </Button>
+          {canUpdate && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => setBulk({ open: true, stage: null })}
+            >
+              <ListChecks className="mr-1 size-4" /> Apply Status to All Panels
+            </Button>
+          )}
           {
             <Button
               size="sm"
@@ -364,13 +396,24 @@ function ProductionDashboard() {
                     <th className="sticky left-0 z-30 min-w-52 border-b bg-card px-4 py-3 text-left font-semibold">
                       Panel
                     </th>
-                    {STAGES.map((s) => (
+                    {columnStages.map((s) => (
                       <th
                         key={s.value}
                         title={s.label}
                         className="border-b bg-card px-2 py-3 text-center text-[11px] font-semibold whitespace-nowrap"
                       >
                         {STAGE_SHORT[s.value]}
+                        {canUpdate && (
+                          <button
+                            type="button"
+                            aria-label={`Apply Status to All Panels: ${s.label}`}
+                            title={`Apply Status to All Panels (${s.label})`}
+                            onClick={() => setBulk({ open: true, stage: s.value })}
+                            className="mx-auto mt-1 flex items-center gap-0.5 rounded-md px-1 py-0.5 text-[10px] font-medium text-primary hover:bg-accent"
+                          >
+                            <ListChecks className="size-3" /> All
+                          </button>
+                        )}
                       </th>
                     ))}
                   </tr>
@@ -384,7 +427,7 @@ function ProductionDashboard() {
                           {panel.part_number || "—"}
                         </span>
                       </th>
-                      {STAGES.map((stage) => {
+                      {columnStages.map((stage) => {
                         const cell = cellMap.get(`${panel.id}-${stage.value}`);
                         const isApplicable = applicable(panel.id, stage.value);
                         const dim =
@@ -425,7 +468,7 @@ function ProductionDashboard() {
                   {activePanels.length === 0 && (
                     <tr>
                       <td
-                        colSpan={STAGES.length + 1}
+                        colSpan={columnStages.length + 1}
                         className="px-4 py-10 text-center text-sm text-muted-foreground"
                       >
                         No panels match your search.
@@ -446,27 +489,30 @@ function ProductionDashboard() {
                   <span className="text-xs text-muted-foreground">{panel.part_number || "—"}</span>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2">
-                  {STAGES.filter((s) => applicable(panel.id, s.value)).map((stage) => {
-                    const cell = cellMap.get(`${panel.id}-${stage.value}`);
-                    if (!cell) return null;
-                    return (
-                      <button
-                        key={stage.value}
-                        type="button"
-                        onClick={() => openCell(cell)}
-                        className="flex items-center justify-between gap-2 rounded-xl bg-muted/60 px-3 py-2 text-left"
-                      >
-                        <span className="truncate text-xs">{stage.label}</span>
-                        <span className="flex flex-col items-end gap-0.5">
-                          <StatusBadge status={cell.status} compact />
-                          {cell.qc_status && <QcBadge status={cell.qc_status} compact />}
-                          {cell.remarks && (
-                            <MessageSquare className="size-3 text-muted-foreground" />
-                          )}
-                        </span>
-                      </button>
-                    );
-                  })}
+                  {panelFullOrder((stages ?? []) as never, panel.id)
+                    .map((v) => STAGES.find((s) => s.value === v)!)
+                    .filter((s) => s && applicable(panel.id, s.value))
+                    .map((stage) => {
+                      const cell = cellMap.get(`${panel.id}-${stage.value}`);
+                      if (!cell) return null;
+                      return (
+                        <button
+                          key={stage.value}
+                          type="button"
+                          onClick={() => openCell(cell)}
+                          className="flex items-center justify-between gap-2 rounded-xl bg-muted/60 px-3 py-2 text-left"
+                        >
+                          <span className="truncate text-xs">{stage.label}</span>
+                          <span className="flex flex-col items-end gap-0.5">
+                            <StatusBadge status={cell.status} compact />
+                            {cell.qc_status && <QcBadge status={cell.qc_status} compact />}
+                            {cell.remarks && (
+                              <MessageSquare className="size-3 text-muted-foreground" />
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })}
                 </div>
               </GlassPanel>
             ))}
@@ -485,8 +531,22 @@ function ProductionDashboard() {
           setId={activeSetId}
           setNumber={activeSetNumber}
           panels={activePanels}
+          summaryPanels={(panels ?? []).filter(
+            (p) => p.is_active && (!p.set_id || p.set_id === activeSetId),
+          )}
           projectTolerance={project?.weight_tolerance_pct}
           canEdit={canUpdate}
+        />
+      )}
+
+      {canUpdate && project && (
+        <BulkStatusDialog
+          open={bulk.open}
+          onOpenChange={(o) => setBulk((b) => ({ ...b, open: o }))}
+          projectId={projectId}
+          projectCode={project.code}
+          initialStage={bulk.stage}
+          stageOrder={columnStages.map((s) => s.value as string)}
         />
       )}
 

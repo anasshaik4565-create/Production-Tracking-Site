@@ -43,13 +43,10 @@ function downloadTemplate() {
  * validation, and hands the valid rows to `onImport`. Manual entry stays available elsewhere.
  */
 export function PanelExcelImport({
-  existingIds,
   knownSets,
   onImport,
   triggerLabel = "Upload Excel",
 }: {
-  /** ID Numbers already used in the project (case-insensitive duplicates are rejected). */
-  existingIds: string[];
   /** Set numbers that already exist; others in the file are reported as "will be added". */
   knownSets: number[];
   /** Must throw on failure. Called with the valid rows only. */
@@ -82,7 +79,7 @@ export function PanelExcelImport({
     setReading(true);
     setFileName(file.name);
     try {
-      const parsed = await parsePanelWorkbook(file, existingIds);
+      const parsed = await parsePanelWorkbook(file);
       setResult(parsed);
     } catch (error) {
       setResult(null);
@@ -139,8 +136,8 @@ export function PanelExcelImport({
             <DialogTitle>Import panels from Excel</DialogTitle>
             <DialogDescription>
               Upload an .xlsx file with the columns Panel Name, Set Number, Part Number, ID Number,
-              Part Area and Part Weight (ID Number is optional). You will see a preview before
-              anything is saved.
+              Part Area and Part Weight (ID Number is optional; Part Numbers and ID Numbers may
+              repeat). You will see a preview before anything is saved.
             </DialogDescription>
           </DialogHeader>
 

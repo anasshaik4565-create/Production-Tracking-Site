@@ -30,6 +30,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { logAudit } from "@/lib/audit";
 import { useAccess } from "@/lib/access";
 import { PanelExcelImport } from "@/components/PanelExcelImport";
+import { StageSequenceEditor } from "@/components/StageSequenceEditor";
+import { DEFAULT_ORDER, insertInDefaultOrder, panelStageOrder } from "@/lib/stages";
 import { STAGES, formatSet } from "@/lib/domain";
 import type { ImportedPanel } from "@/lib/panel-import";
 import { usePanelStages, usePanels, useProject, useSets } from "@/lib/queries";
@@ -108,11 +110,7 @@ function PanelConfig() {
     const { error } = await supabase.from("panels").update(patch).eq("id", panelId);
     setBusy(null);
     if (error) {
-      toast.error(
-        error.code === "23505"
-          ? "That ID Number is already used by another panel in this project."
-          : "We couldn't save this change. Please try again.",
-      );
+      toast.error("We couldn't save this change. Please try again.");
       await queryClient.invalidateQueries({ queryKey: ["panels", projectId] });
       return;
     }
@@ -121,34 +119,58 @@ function PanelConfig() {
     toast.success("Panel updated.");
   }
 
+  /** Add or remove one stage for one panel. The panel keeps its own order; other panels are untouched. */
   async function toggleStage(panelId: string, stage: string) {
-    const existing = stageOf(panelId, stage);
-    setBusy(`${panelId}-${stage}`);
-    const seq = STAGES.findIndex((s) => s.value === stage) + 1;
-    const { error } = existing
-      ? await supabase
-          .from("panel_stages")
-          .update({ is_applicable: !existing.is_applicable })
-          .eq("id", existing.id)
-      : await supabase.from("panel_stages").insert({
-          panel_id: panelId,
-          project_id: projectId,
-          stage: stage as never,
-          is_applicable: true,
-          sequence: seq,
-        });
-    setBusy(null);
-    if (error) {
-      toast.error("You do not have permission to change stage configuration.");
+    const current = panelStageOrder(stages ?? [], panelId);
+    const next = current.includes(stage)
+      ? current.filter((x) => x !== stage)
+      : insertInDefaultOrder(current, stage);
+    if (next.length === 0) {
+      toast.error("A panel needs at least one stage.");
       return;
     }
-    await queryClient.invalidateQueries({ queryKey: ["panel-stages", projectId] });
+    setBusy(`${panelId}-${stage}`);
+    const { error } = await supabase.rpc("apply_stages_to_panels", {
+      p_project_id: projectId,
+      p_stages: next,
+      p_panel_ids: [panelId],
+      p_save_default: false,
+    });
+    setBusy(null);
+    if (error) {
+      toast.error(
+        error.code === "P0001" && error.message
+          ? error.message
+          : "You do not have permission to change stage configuration.",
+      );
+      return;
+    }
+    await queryClient.invalidateQueries();
     toast.success("Stage configuration saved.");
   }
 
+  /** Save a new execution order for one panel. Only the order changes: no status, QC, remark or weight. */
+  async function reorderStages(panelId: string, order: string[]) {
+    setBusy(`order-${panelId}`);
+    const { error } = await supabase.rpc("reorder_panel_stages", {
+      p_panel_id: panelId,
+      p_order: order,
+    });
+    setBusy(null);
+    if (error) {
+      toast.error(
+        error.code === "P0001" && error.message
+          ? error.message
+          : "We couldn't save the stage order. Please try again.",
+      );
+      return;
+    }
+    await queryClient.invalidateQueries({ queryKey: ["panel-stages", projectId] });
+    toast.success("Stage order saved.");
+  }
+
   const activeSets = sets ?? [];
-  const existingIds = (panels ?? []).filter((p) => p.is_active).map((p) => p.id_number ?? "");
-  const master = masterStages ?? project?.default_stages ?? STAGES.map((st) => st.value as string);
+  const master = masterStages ?? project?.default_stages ?? [...DEFAULT_ORDER];
   const chosenSet =
     newPanel.set_number || (activeSets.length === 1 ? String(activeSets[0]!.set_number) : "");
 
@@ -168,10 +190,6 @@ function PanelConfig() {
       return;
     }
     const idn = newPanel.id_number.trim();
-    if (idn && existingIds.some((x) => x.trim().toLowerCase() === idn.toLowerCase())) {
-      toast.error(`ID Number ${idn} already exists in this project.`);
-      return;
-    }
     setBusy("new");
     const { data, error } = await supabase.rpc("add_panels", {
       p_project_id: projectId,
@@ -421,7 +439,6 @@ function PanelConfig() {
               </p>
             </div>
             <PanelExcelImport
-              existingIds={existingIds}
               knownSets={activeSets.map((x) => x.set_number)}
               onImport={importPanels}
             />
@@ -538,11 +555,7 @@ function PanelConfig() {
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setMasterStages(STAGES.map((st) => st.value as string))}
-              >
+              <Button size="sm" variant="ghost" onClick={() => setMasterStages([...DEFAULT_ORDER])}>
                 Select all
               </Button>
               <Button size="sm" variant="ghost" onClick={() => setMasterStages([])}>
@@ -563,7 +576,9 @@ function PanelConfig() {
                   type="button"
                   onClick={() =>
                     setMasterStages(
-                      on ? master.filter((x) => x !== stage.value) : [...master, stage.value],
+                      on
+                        ? master.filter((x) => x !== stage.value)
+                        : insertInDefaultOrder(master, stage.value),
                     )
                   }
                   className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
@@ -577,6 +592,7 @@ function PanelConfig() {
               );
             })}
           </div>
+          <StageSequenceEditor className="mt-3" stages={master} onChange={setMasterStages} />
           <label className="mt-3 flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -820,6 +836,12 @@ function PanelConfig() {
                       );
                     })}
                   </div>
+                  <StageSequenceEditor
+                    className="mt-3"
+                    stages={panelStageOrder(stages ?? [], panel.id)}
+                    disabled={!canEdit || busy === `order-${panel.id}`}
+                    onChange={(order) => reorderStages(panel.id, order)}
+                  />
                 </div>
               </GlassPanel>
             ))}

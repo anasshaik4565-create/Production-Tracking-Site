@@ -89,15 +89,10 @@ function isBlank(value: unknown) {
 
 /**
  * Validate parsed spreadsheet rows (header row already used to build the objects).
- * Part Numbers may repeat. ID Numbers (optional) must be unique: `existingIds` are the ID Numbers
- * already used in the project (case-insensitive).
+ * Part Numbers and ID Numbers are free text and MAY repeat: a repeated value never rejects a row,
+ * and every valid row becomes its own panel (the database identifies panels by an internal id).
  */
-export function validateRows(
-  rows: Record<string, unknown>[],
-  existingIds: string[] = [],
-): ImportResult {
-  const existing = new Set(existingIds.map((p) => p.trim().toLowerCase()).filter(Boolean));
-  const seen = new Map<string, number>();
+export function validateRows(rows: Record<string, unknown>[]): ImportResult {
   const valid: ImportedPanel[] = [];
   const issues: ImportIssue[] = [];
 
@@ -139,14 +134,6 @@ export function validateRows(
     }
 
     const idNumber = String(get("ID Number") ?? "").trim();
-    if (idNumber) {
-      const key = idNumber.toLowerCase();
-      if (existing.has(key))
-        problems.push(`ID Number "${idNumber}" already exists in this project`);
-      else if (seen.has(key))
-        problems.push(`ID Number "${idNumber}" is repeated (first used in row ${seen.get(key)})`);
-      else seen.set(key, row);
-    }
 
     if (problems.length > 0) {
       for (const message of problems) issues.push({ row, message });
@@ -172,10 +159,7 @@ export function validateRows(
 }
 
 /** Read the first sheet of an .xlsx file and validate it. */
-export async function parsePanelWorkbook(
-  file: File | ArrayBuffer,
-  existingIds: string[] = [],
-): Promise<ImportResult> {
+export async function parsePanelWorkbook(file: File | ArrayBuffer): Promise<ImportResult> {
   const buffer = file instanceof ArrayBuffer ? file : await file.arrayBuffer();
   let workbook: XLSX.WorkBook;
   try {
@@ -213,16 +197,16 @@ export async function parsePanelWorkbook(
     }
     return o;
   });
-  return validateRows(objects, existingIds);
+  return validateRows(objects);
 }
 
 /** Download-ready template workbook (as an ArrayBuffer). */
 export function buildTemplateWorkbook(): ArrayBuffer {
   const data = [
     [...ALL_COLUMNS],
-    ["Panel A", 5, "1001", "ID-0001", 12.5, 48],
-    ["Panel B", 5, "1001", "ID-0002", 10.2, 41.5],
-    ["Panel A", 6, "1003", "ID-0003", 12.5, 48],
+    ["Panel A", 5, "1001", "001", 12.5, 48],
+    ["Panel B", 5, "1001", "001", 10.2, 41.5],
+    ["Panel A", 6, "1003", "002", 12.5, 48],
   ];
   const sheet = XLSX.utils.aoa_to_sheet(data);
   sheet["!cols"] = [{ wch: 28 }, { wch: 12 }, { wch: 16 }, { wch: 16 }, { wch: 12 }, { wch: 13 }];
@@ -236,7 +220,7 @@ export function buildTemplateWorkbook(): ArrayBuffer {
     ],
     [
       "ID Number",
-      "Optional. A unique ID for each panel. When entered it must not repeat inside the project.",
+      "Optional. Free text. The same ID Number may appear on several panels; each row still creates its own panel.",
     ],
     ["Part Area", "Panel area in m² (number, required)"],
     [

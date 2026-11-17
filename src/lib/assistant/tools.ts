@@ -8,9 +8,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { Database } from "@/integrations/supabase/types";
+import { deriveColumnOrder, panelFullOrder, type PanelStageRow } from "@/lib/stages";
 import {
   PENDING_WORK,
   countByStatus,
+  finalWeightTotals,
   fmtIST,
   perSet,
   periodRange,
@@ -145,7 +147,7 @@ async function resolveProject(
 }
 
 async function loadProjectData(db: Db, projectId: string) {
-  const [sets, panels, status, weights] = await Promise.all([
+  const [sets, panels, status, weights, stageRows] = await Promise.all([
     db.from("production_sets").select("id,set_number,is_active").eq("project_id", projectId),
     db
       .from("panels")
@@ -166,8 +168,12 @@ async function loadProjectData(db: Db, projectId: string) {
       .from("panel_weights")
       .select("panel_id,set_id,untrimmed_weight,final_weight")
       .eq("project_id", projectId),
+    db
+      .from("panel_stages")
+      .select("panel_id,stage,sequence,is_applicable")
+      .eq("project_id", projectId),
   ]);
-  for (const r of [sets, panels, weights]) if (r.error) throw new Error(r.error.message);
+  for (const r of [sets, panels, weights, stageRows]) if (r.error) throw new Error(r.error.message);
   const panelList = (panels.data ?? []) as PanelLite[];
   const activePanelIds = new Set(panelList.filter((p) => p.is_active).map((p) => p.id));
   return {
@@ -176,6 +182,7 @@ async function loadProjectData(db: Db, projectId: string) {
     // Production records of deactivated panels are not part of live production figures.
     status: status.rows.filter((r) => activePanelIds.has(r.panel_id)),
     weights: (weights.data ?? []) as WeightRec[],
+    stageRows: (stageRows.data ?? []) as PanelStageRow[],
     truncated: status.truncated,
   };
 }
@@ -285,6 +292,15 @@ export const TOOLS: Tool[] = [
             8,
           ),
           weight_checks: weightSummary(wr),
+          final_weight_totals: finalWeightTotals(
+            d.panels,
+            d.sets,
+            d.weights,
+            p.weight_tolerance_pct,
+          ),
+          stage_sequence: deriveColumnOrder(d.stageRows).filter((s) =>
+            d.stageRows.some((r) => r.stage === s && r.is_applicable),
+          ),
           weight_tolerance_pct: p.weight_tolerance_pct,
           latest_remarks: (hist ?? []).map((h) => ({
             panel: h.panel_name,
@@ -442,7 +458,7 @@ export const TOOLS: Tool[] = [
   {
     name: "weight_analysis",
     description:
-      "Untrimmed and final weight checks against the expected Part Weight and the tolerance. Returns counts (within tolerance / overweight / underweight / not recorded) and a list of panels, optionally filtered by verdict or set.",
+      "Weight checks against the expected Part Weight and the tolerance. Returns counts (within tolerance / overweight / underweight / not recorded), a list of panels with difference in kg and deviation %, and expected vs recorded FINAL weight totals per set and for the whole project. Optionally filtered by verdict or set.",
     input_schema: {
       type: "object",
       properties: {
@@ -477,6 +493,17 @@ export const TOOLS: Tool[] = [
           project_tolerance_pct: r.project.weight_tolerance_pct,
           set: setNumber ? setLabel(setNumber) : "all sets",
           summary,
+          final_weight_totals: (() => {
+            const t = finalWeightTotals(
+              d.panels,
+              d.sets,
+              d.weights,
+              r.project.weight_tolerance_pct,
+            );
+            return setNumber === undefined
+              ? t
+              : { bySet: t.bySet.filter((x) => x.set_number === setNumber), project: t.project };
+          })(),
           listed: verdict ?? "over and under (outside tolerance)",
           total_listed: list.length,
           rows: list.slice(0, limit).map((x) => ({
@@ -611,6 +638,11 @@ export const TOOLS: Tool[] = [
                 set: setLabel(s.set_number),
                 stages: d.status
                   .filter((x) => x.panel_id === p.id && x.set_id === s.id)
+                  .sort(
+                    (a, b) =>
+                      panelFullOrder(d.stageRows, p.id).indexOf(a.stage) -
+                      panelFullOrder(d.stageRows, p.id).indexOf(b.stage),
+                  )
                   .map((x) => ({
                     stage: x.stage,
                     status: x.status,

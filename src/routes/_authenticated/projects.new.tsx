@@ -20,6 +20,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAccess } from "@/lib/access";
 import { logAudit } from "@/lib/audit";
 import { PanelExcelImport } from "@/components/PanelExcelImport";
+import { StageSequenceEditor } from "@/components/StageSequenceEditor";
+import { insertInDefaultOrder } from "@/lib/stages";
 import { COUNTRIES, STAGES, formatSet } from "@/lib/domain";
 import type { ImportedPanel } from "@/lib/panel-import";
 import { pageTitle } from "@/lib/brand";
@@ -72,8 +74,9 @@ function isBlankPanel(p: PanelDraft) {
   );
 }
 
+/** Same stages in the same execution order. */
 const sameStages = (a: string[], b: string[]) =>
-  a.length === b.length && a.every((x) => b.includes(x));
+  a.length === b.length && a.every((x, i) => x === b[i]);
 
 const STEPS = ["Project details", "Sets", "Panels", "Stages"] as const;
 
@@ -107,7 +110,7 @@ function NewProject() {
 
   function toggleMaster(stage: string) {
     setMasterStages((prev) =>
-      prev.includes(stage) ? prev.filter((x) => x !== stage) : [...prev, stage],
+      prev.includes(stage) ? prev.filter((x) => x !== stage) : insertInDefaultOrder(prev, stage),
     );
   }
 
@@ -132,7 +135,7 @@ function NewProject() {
               ...p,
               stages: p.stages.includes(stage)
                 ? p.stages.filter((s) => s !== stage)
-                : [...p.stages, stage],
+                : insertInDefaultOrder(p.stages, stage),
             }
           : p,
       ),
@@ -224,19 +227,11 @@ function NewProject() {
 
   function validatePanels(): string | null {
     if (panels.length === 0) return "Add at least one panel.";
-    const seenIds = new Map<string, number>();
     for (const [i, p] of panels.entries()) {
       const label = p.name.trim() || `Panel ${i + 1}`;
       if (!p.name.trim()) return `Panel ${i + 1} needs a name.`;
       if (!sets.includes(Number(p.set_number))) return `${label}: choose a set.`;
       if (!p.part_number.trim()) return `${label}: enter a part number.`;
-      const idKey = p.id_number.trim().toLowerCase();
-      if (idKey) {
-        const first = seenIds.get(idKey);
-        if (first !== undefined)
-          return `ID Number ${p.id_number.trim()} is used by panel ${first} and panel ${i + 1}. ID Numbers must be unique.`;
-        seenIds.set(idKey, i + 1);
-      }
       if (p.part_area && (!Number.isFinite(Number(p.part_area)) || Number(p.part_area) < 0))
         return `${label}: part area must be a positive number.`;
       if (p.part_weight && (!Number.isFinite(Number(p.part_weight)) || Number(p.part_weight) < 0))
@@ -478,11 +473,7 @@ function NewProject() {
                   both methods.
                 </p>
               </div>
-              <PanelExcelImport
-                existingIds={panels.map((p) => p.id_number)}
-                knownSets={sets}
-                onImport={importPanels}
-              />
+              <PanelExcelImport knownSets={sets} onImport={importPanels} />
             </div>
 
             {[...sets, null as number | null].map((setNumber) => {
@@ -676,6 +667,11 @@ function NewProject() {
                   );
                 })}
               </div>
+              <StageSequenceEditor
+                className="mt-3"
+                stages={masterStages}
+                onChange={setMasterStages}
+              />
               <label className="mt-3 flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
@@ -731,6 +727,13 @@ function NewProject() {
                   )}
                 </div>
                 {stageMode === "individual" && (
+                  <StageSequenceEditor
+                    className="mt-3"
+                    stages={panel.stages}
+                    onChange={(order) => updatePanel(i, { stages: order })}
+                  />
+                )}
+                {stageMode === "individual" && (
                   <div className="mt-3 flex flex-wrap gap-2">
                     {STAGES.map((stage) => {
                       const on = panel.stages.includes(stage.value);
@@ -754,9 +757,9 @@ function NewProject() {
                 <p className="mt-2 text-xs text-muted-foreground">
                   {formatSet(Number(panel.set_number))} · {panel.stages.length} of{" "}
                   {ALL_STAGES.length} stages applicable · {panel.stages.length} production records
-                  {stageMode === "all" && panel.stages.length > 0
-                    ? ` · ${STAGES.filter((st) => panel.stages.includes(st.value))
-                        .map((st) => st.short)
+                  {panel.stages.length > 0
+                    ? ` · ${panel.stages
+                        .map((v) => STAGES.find((st) => st.value === v)?.short ?? v)
                         .join(" → ")}`
                     : ""}
                 </p>

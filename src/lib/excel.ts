@@ -13,15 +13,49 @@ import {
   formatTime,
 } from "@/lib/domain";
 import { logAudit } from "@/lib/audit";
+import { buildStandardRows } from "@/lib/export-format";
 
-export type SheetSpec = { name: string; rows: Record<string, unknown>[] };
+export type SheetSpec = {
+  name: string;
+  rows: Record<string, unknown>[];
+  /** Column order to use even when there are no rows. */
+  columns?: string[];
+  /** Excel number format per column (for example "0.00"). */
+  numberFormats?: Record<string, string>;
+};
+
+/** Read every row of a query, page by page (the API returns at most 1000 rows per request). */
+async function fetchAllRows<T>(
+  run: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
+  max = 50000,
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let from = 0; from < max; from += 1000) {
+    const { data, error } = await run(from, from + 999);
+    if (error) throw new Error("Unable to read production data. Please try again.");
+    out.push(...(data ?? []));
+    if (!data || data.length < 1000) break;
+  }
+  return out;
+}
 
 export function downloadWorkbook(sheets: SheetSpec[], filename: string) {
   const wb = XLSX.utils.book_new();
   for (const sheet of sheets) {
     const rows = sheet.rows.length ? sheet.rows : [{ Info: "No data" }];
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const widths = Object.keys(rows[0] ?? {}).map((key) => ({
+    const ws = XLSX.utils.json_to_sheet(
+      rows,
+      sheet.columns ? { header: sheet.columns } : undefined,
+    );
+    for (const [col, fmt] of Object.entries(sheet.numberFormats ?? {})) {
+      const c = (sheet.columns ?? Object.keys(rows[0] ?? {})).indexOf(col);
+      if (c < 0) continue;
+      for (let r = 1; r <= sheet.rows.length; r++) {
+        const cell = ws[XLSX.utils.encode_cell({ r, c })];
+        if (cell && cell.t === "n") cell.z = fmt;
+      }
+    }
+    const widths = (sheet.columns ?? Object.keys(rows[0] ?? {})).map((key) => ({
       wch: Math.min(
         40,
         Math.max(key.length + 2, ...rows.map((r) => String(r[key] ?? "").length + 2)),
@@ -43,38 +77,66 @@ export type ExportFilters = {
 
 /** Full project workbook: summary, sets, panels, production status, history. */
 export async function exportProjectWorkbook(projectId: string, filters: ExportFilters = {}) {
-  const [
-    { data: project },
-    { data: sets },
-    { data: panels },
-    { data: stages },
-    { data: weightRows },
-  ] = await Promise.all([
+  const [{ data: project }, { data: sets }, { data: panels }] = await Promise.all([
     supabase.from("projects").select("*").eq("id", projectId).maybeSingle(),
     supabase.from("production_sets").select("*").eq("project_id", projectId).order("set_number"),
     supabase.from("panels").select("*").eq("project_id", projectId).order("sequence"),
-    supabase.from("panel_stages").select("*").eq("project_id", projectId),
-    supabase.from("panel_weights").select("*").eq("project_id", projectId),
   ]);
-
   if (!project) throw new Error("Unable to load project. Please try again.");
 
-  let statusQuery = supabase.from("production_status").select("*").eq("project_id", projectId);
-  if (filters.setId) statusQuery = statusQuery.eq("set_id", filters.setId);
-  if (filters.panelId) statusQuery = statusQuery.eq("panel_id", filters.panelId);
-  if (filters.stage) statusQuery = statusQuery.eq("stage", filters.stage as never);
-  if (filters.status) statusQuery = statusQuery.eq("status", filters.status as never);
-  if (filters.qcStatus === "none") statusQuery = statusQuery.is("qc_status", null);
-  else if (filters.qcStatus) statusQuery = statusQuery.eq("qc_status", filters.qcStatus as never);
-  const { data: statuses } = await statusQuery;
+  // These tables can hold thousands of rows, so they are read page by page.
+  const [stages, weightRows, allStatuses, history] = await Promise.all([
+    fetchAllRows((from, to) =>
+      supabase
+        .from("panel_stages")
+        .select("*")
+        .eq("project_id", projectId)
+        .order("id")
+        .range(from, to),
+    ),
+    fetchAllRows((from, to) =>
+      supabase
+        .from("panel_weights")
+        .select("*")
+        .eq("project_id", projectId)
+        .order("id")
+        .range(from, to),
+    ),
+    fetchAllRows((from, to) =>
+      supabase
+        .from("production_status")
+        .select("*")
+        .eq("project_id", projectId)
+        .order("id")
+        .range(from, to),
+    ),
+    fetchAllRows(
+      (from, to) =>
+        supabase
+          .from("production_history")
+          .select("*")
+          .eq("project_id", projectId)
+          .order("changed_at", { ascending: false })
+          .order("id")
+          .range(from, to),
+      20000,
+    ),
+  ]);
 
-  let historyQuery = supabase
-    .from("production_history")
-    .select("*")
-    .eq("project_id", projectId)
-    .order("changed_at", { ascending: false });
-  if (filters.stage) historyQuery = historyQuery.eq("stage", filters.stage as never);
-  const { data: history } = await historyQuery;
+  // Filters for the long-format sheets (the standard sheet applies the same filters itself).
+  const statuses = allStatuses
+    .filter((x) => !filters.setId || x.set_id === filters.setId)
+    .filter((x) => !filters.panelId || x.panel_id === filters.panelId)
+    .filter((x) => !filters.stage || x.stage === filters.stage)
+    .filter((x) => !filters.status || x.status === filters.status)
+    .filter((x) =>
+      !filters.qcStatus
+        ? true
+        : filters.qcStatus === "none"
+          ? !x.qc_status
+          : x.qc_status === filters.qcStatus,
+    );
+  const historyRows = history.filter((h) => !filters.stage || h.stage === filters.stage);
 
   const { data: progress } = await supabase.rpc("get_project_progress", {
     p_project_id: projectId,
@@ -85,12 +147,38 @@ export async function exportProjectWorkbook(projectId: string, filters: ExportFi
   const panelById = new Map((panels ?? []).map((p) => [p.id, p]));
   // Latest recorded name per panel / set / stage, taken from the permanent history log.
   const lastBy = new Map<string, string>();
-  for (const h of history ?? []) {
+  for (const h of historyRows) {
     const key = `${h.panel_id}|${h.set_number}|${h.stage}`;
     if (!lastBy.has(key)) lastBy.set(key, h.changed_by_name ?? "");
   }
 
+  const standard = buildStandardRows(
+    {
+      projectCode: project.code,
+      projectTolerance: project.weight_tolerance_pct,
+      sets: sets ?? [],
+      panels: panels ?? [],
+      panelStages: stages,
+      statuses: allStatuses,
+      weights: weightRows,
+    },
+    filters,
+  );
+
   const sheets: SheetSpec[] = [
+    {
+      // One row per panel, one column per production stage: the standard layout for every export.
+      name: "Production Tracking",
+      rows: standard.rows,
+      columns: standard.columns,
+      numberFormats: {
+        "Part Area": "0.00",
+        "Expected Part Weight": "0.00",
+        "Untrimmed Weight": "0.00",
+        "Final Weight": "0.00",
+        "Weight Difference": "0.00",
+      },
+    },
     {
       name: "Project Summary",
       rows: [
@@ -129,15 +217,16 @@ export async function exportProjectWorkbook(projectId: string, filters: ExportFi
           project.weight_tolerance_pct,
         ),
         Active: p.is_active ? "Yes" : "No",
-        "Applicable Stages": (stages ?? [])
+        "Applicable Stages": stages
           .filter((s) => s.panel_id === p.id && s.is_applicable)
+          .sort((a, b) => a.sequence - b.sequence)
           .map((s) => STAGE_LABEL[s.stage])
           .join(", "),
       })),
     },
     {
       name: "Weights",
-      rows: (weightRows ?? [])
+      rows: weightRows
         .filter((w) => !filters.setId || w.set_id === filters.setId)
         .filter((w) => !filters.panelId || w.panel_id === filters.panelId)
         .flatMap((w) => {
@@ -169,7 +258,7 @@ export async function exportProjectWorkbook(projectId: string, filters: ExportFi
     },
     {
       name: "Production Status",
-      rows: (statuses ?? []).map((s) => {
+      rows: statuses.map((s) => {
         const panel = panelById.get(s.panel_id);
         return {
           Project: project.code,
@@ -189,7 +278,7 @@ export async function exportProjectWorkbook(projectId: string, filters: ExportFi
     },
     {
       name: "Production History",
-      rows: (history ?? []).map((h) => ({
+      rows: historyRows.map((h) => ({
         Date: formatDate(h.changed_at),
         Time: formatTime(h.changed_at),
         User: h.changed_by_name ?? "",
