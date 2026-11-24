@@ -91,12 +91,12 @@ export function readProviderConfig(
     const key = env[`${prefix}_API_KEY`]?.trim();
     const model = env[`${prefix}_MODEL`]?.trim();
     const apiUrl = (env[`${prefix}_API_URL`]?.trim() || defaultUrl).replace(/\/+$/, "");
-    if (key && model && apiUrl) compatibleProviders.push({ name, apiKey: key, model, apiUrl });
+    if (key && apiUrl) compatibleProviders.push({ name, apiKey: key, model: model || "", apiUrl });
   }
   if (!apiKey && !compatibleProviders.length) {
     throw new ProviderError(
       "not_configured",
-      "The AI assistant is not configured yet. An administrator must configure at least one AI provider and model on the server.",
+      "The AI assistant is not configured yet. An administrator must configure at least one AI provider on the server.",
     );
   }
   const clean = (m: string) => m.trim().replace(/^models\//, "");
@@ -125,9 +125,9 @@ export function readProviderConfig(
       "",
     ),
     thinkingLevel,
-    requestTimeoutMs: intFrom(env["GEMINI_REQUEST_TIMEOUT_MS"], 3_000, 1_000, 80_000),
+    requestTimeoutMs: intFrom(env["GEMINI_REQUEST_TIMEOUT_MS"], 8_000, 1_000, 80_000),
     retryBaseMs: intFrom(env["GEMINI_RETRY_BASE_MS"], 1_000, 10, 10_000),
-    totalTimeoutMs: intFrom(env["GEMINI_TOTAL_TIMEOUT_MS"], 12_000, 5_000, 95_000),
+    totalTimeoutMs: intFrom(env["GEMINI_TOTAL_TIMEOUT_MS"], 30_000, 5_000, 95_000),
   };
 }
 
@@ -474,7 +474,7 @@ async function runCompatible(
     try {
       const response = await fetch(`${provider.apiUrl}/chat/completions`, {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${provider.apiKey}` },
-        body: JSON.stringify({ model: provider.model, messages, tools, tool_choice: "auto", max_completion_tokens: 1024 }),
+        body: JSON.stringify({ model: provider.model, messages, tools, tool_choice: "auto", ...(provider.name === "openrouter" ? { max_tokens: 1024 } : { max_completion_tokens: 1024 }) }),
         signal: AbortSignal.timeout(Math.min(remaining, cfg.requestTimeoutMs)),
       });
       if (!response.ok) {
@@ -508,35 +508,94 @@ async function runCompatible(
   throw new ProviderError("bad_response", "Too many data lookups. Please ask a narrower question.");
 }
 
-/** Fast sequential failover across configured providers; no duplicate parallel model requests. */
+// Cache discovery per provider credential, never log credentials.
+const modelCache = new Map<string, { expires: number; models: string[] }>();
+const discoveryPending = new Map<string, Promise<string[]>>();
+const cooldown = new Map<string, number>();
+const latency = new Map<string, number>();
+const routeKey = (p: CompatibleProvider) => JSON.stringify([p.name, p.apiUrl, p.apiKey, p.model]);
+async function discover(p: CompatibleProvider): Promise<string[]> {
+  if (p.model && p.model !== "auto") return [p.model];
+  const key = routeKey(p);
+  const old = modelCache.get(key);
+  if (old && old.expires > Date.now()) return old.models;
+  const pending = discoveryPending.get(key);
+  if (pending) return pending;
+  const work = (async () => {
+    try {
+      const query = p.name === "openrouter" ? "?supported_parameters=tools&sort=latency-low-to-high" : "";
+      const response = await fetch(`${p.apiUrl}/models${query}`, {
+        headers: { Authorization: `Bearer ${p.apiKey}` }, signal: AbortSignal.timeout(2500),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const body = await response.json() as { data?: { id: string; active?: boolean; supported_parameters?: string[]; pricing?: Record<string, string> }[] };
+      const rows = (body.data ?? []).filter(m => typeof m.id === "string" && m.active !== false);
+      const groqPreferred = ["openai/gpt-oss-20b", "llama-3.1-8b-instant", "openai/gpt-oss-120b", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile", "meta-models/muse-spark-open"];
+      let models: string[];
+      if (p.name === "groq") {
+        models = groqPreferred.filter(id => rows.some(m => m.id === id));
+      } else if (p.name === "openrouter") {
+        models = rows.filter(m => m.id.endsWith(":free") && m.supported_parameters?.includes("tools") && m.pricing && Number(m.pricing.prompt) === 0 && Number(m.pricing.completion) === 0 && Number(m.pricing.request ?? 0) === 0).map(m => m.id);
+      } else {
+        // Unknown providers may not expose tool capability; require an explicit model.
+        models = rows.filter(m => m.supported_parameters?.includes("tools")).map(m => m.id);
+      }
+      models = [...new Set(models)].slice(0, 3);
+      modelCache.set(key, { expires: Date.now() + (models.length ? 3600000 : 30000), models });
+      console.info(`[assistant] ${p.name} discovered: ${models.join(", ") || "no eligible models"}`);
+      return models;
+    } catch {
+      console.warn(`[assistant] ${p.name} model discovery failed`);
+      return old?.models ?? [];
+    }
+  })();
+  discoveryPending.set(key, work);
+  try { return await work; } finally { discoveryPending.delete(key); }
+}
+
 export async function runAssistant(opts: {
   cfg: ProviderConfig; system: string; turns: ChatTurn[]; ctx: ToolContext;
 }): Promise<{ answer: string; sources: Source[]; rounds: number; model: string }> {
   const { cfg } = opts;
   const deadline = Date.now() + cfg.totalTimeoutMs;
-  const routes: { name: string; model: string; run: (until: number) => Promise<{ answer: string; sources: Source[]; rounds: number }> }[] = [];
-  if (cfg.apiKey) for (const model of [cfg.model, ...(cfg.fallbackModel ? [cfg.fallbackModel] : [])]) {
-    routes.push({ name: "gemini", model, run: until => runLoop(cfg, model, opts.system, opts.turns, opts.ctx, until) });
+  const discovered = await Promise.all((cfg.compatibleProviders ?? []).map(async p =>
+    (await discover(p)).map(model => ({ ...p, model }))));
+  type Route = { name: string; model: string; key: string; account: string; run: (until: number) => Promise<{ answer: string; sources: Source[]; rounds: number }> };
+  const routes: Route[] = [];
+  const add = (p: CompatibleProvider, run: Route["run"]) => routes.push({ name: p.name, model: p.model, key: routeKey(p), account: routeKey({ ...p, model: "" }), run });
+  // Interleave providers so a slow provider cannot monopolize the queue.
+  const groups: CompatibleProvider[][] = [];
+  if (cfg.apiKey) groups.push([cfg.model, ...(cfg.fallbackModel ? [cfg.fallbackModel] : [])].map(model => ({ name: "gemini", apiKey: cfg.apiKey, apiUrl: cfg.apiUrl, model })));
+  groups.push(...discovered);
+  for (let i = 0; i < Math.max(0, ...groups.map(g => g.length)); i++) {
+    for (const group of groups) {
+      const p = group[i]; if (!p) continue;
+      add(p, until => p.name === "gemini" ? runLoop(cfg, p.model, opts.system, opts.turns, opts.ctx, until) : runCompatible(p, cfg, opts.system, opts.turns, opts.ctx, until));
+    }
   }
-  for (const p of cfg.compatibleProviders ?? []) routes.push({ name: p.name, model: p.model, run: until => runCompatible(p, cfg, opts.system, opts.turns, opts.ctx, until) });
-  let last: unknown = new ProviderError("not_configured", "No AI provider configured.");
-  let skipGemini = false;
-  for (let i = 0; i < routes.length; i++) {
-    const route = routes[i]!;
-    if (skipGemini && route.name === "gemini") continue;
+  const ready = routes.filter(r => (cooldown.get(r.key) ?? 0) <= Date.now());
+  ready.sort((a, b) => (latency.get(a.key) ?? 5000) - (latency.get(b.key) ?? 5000));
+  console.info(`[assistant] available routes: ${ready.map(r => `${r.name}/${r.model}`).join(", ") || "none"}`);
+  let last: unknown = new ProviderError("unavailable", "No eligible AI models available. Check provider logs.");
+  const blockedAccounts = new Set<string>();
+  for (const route of ready) {
+    if (blockedAccounts.has(route.account)) continue;
     const remaining = deadline - Date.now();
     if (remaining < 1000) break;
-    const until = i === routes.length - 1 ? deadline : Math.min(deadline, Date.now() + Math.max(3000, Math.floor(remaining / (routes.length - i))));
+    const until = Math.min(deadline, Date.now() + Math.max(6000, Math.min(12000, cfg.requestTimeoutMs * 2)));
     const started = Date.now();
     try {
       const out = await withinDeadline(route.run(until), until);
-      console.info(`[assistant] ${route.name}/${route.model} answered in ${Date.now() - started}ms`);
+      const ms = Date.now() - started;
+      latency.set(route.key, (latency.get(route.key) ?? ms) * 0.7 + ms * 0.3);
+      console.info(`[assistant] ${route.name}/${route.model} answered in ${ms}ms`);
       return { ...out, model: route.model };
     } catch (e) {
       last = e;
       if (!(e instanceof ProviderError)) throw e;
-      if (e.code === "auth" || e.code === "billing") { if (route.name === "gemini") skipGemini = true; }
+      if (e.code === "auth" || e.code === "billing") blockedAccounts.add(route.account);
       else if (!e.fallbackOk) throw e;
+      cooldown.set(route.key, Date.now() + (e.code === "rate_limited" ? 60000 : 15000));
       console.warn(`[assistant] ${route.name}/${route.model} failed (${e.code}); trying next provider`);
     }
   }
