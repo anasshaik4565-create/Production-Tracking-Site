@@ -35,7 +35,10 @@ export class ProviderError extends Error {
   }
 }
 
+type CompatibleProvider = { name: string; apiKey: string; apiUrl: string; model: string };
+
 export type ProviderConfig = {
+  compatibleProviders?: CompatibleProvider[];
   apiKey: string;
   model: string;
   /** Used only when the primary model keeps failing with temporary or "model not available" errors. */
@@ -77,11 +80,23 @@ const intFrom = (v: string | undefined, fallback: number, min: number, max: numb
 export function readProviderConfig(
   env: Record<string, string | undefined> = process.env,
 ): ProviderConfig {
-  const apiKey = env["GEMINI_API_KEY"]?.trim();
-  if (!apiKey) {
+  const apiKey = env["GEMINI_API_KEY"]?.trim() || "";
+  const compatibleProviders: CompatibleProvider[] = [];
+  for (const [name, prefix, defaultUrl] of [
+    ["groq", "GROQ", "https://api.groq.com/openai/v1"],
+    ["openrouter", "OPENROUTER", "https://openrouter.ai/api/v1"],
+    ["openai", "OPENAI", "https://api.openai.com/v1"],
+    ["custom", "CUSTOM_AI", ""],
+  ]) {
+    const key = env[`${prefix}_API_KEY`]?.trim();
+    const model = env[`${prefix}_MODEL`]?.trim();
+    const apiUrl = (env[`${prefix}_API_URL`]?.trim() || defaultUrl).replace(/\/+$/, "");
+    if (key && model && apiUrl) compatibleProviders.push({ name, apiKey: key, model, apiUrl });
+  }
+  if (!apiKey && !compatibleProviders.length) {
     throw new ProviderError(
       "not_configured",
-      "The AI assistant is not configured yet. An administrator must set GEMINI_API_KEY on the server.",
+      "The AI assistant is not configured yet. An administrator must configure at least one AI provider and model on the server.",
     );
   }
   const clean = (m: string) => m.trim().replace(/^models\//, "");
@@ -102,6 +117,7 @@ export function readProviderConfig(
         : "auto";
   return {
     apiKey,
+    compatibleProviders,
     model,
     fallbackModel,
     apiUrl: (env["GEMINI_API_URL"]?.trim() || "https://generativelanguage.googleapis.com").replace(
@@ -439,45 +455,90 @@ async function runLoop(
   );
 }
 
-/**
- * Answer a question. The primary model is tried first (with retries); if it keeps failing for a
- * temporary reason, or is not available, the optional fallback model answers instead, starting the
- * conversation again from the original messages so nothing is duplicated.
- */
+/** OpenAI-compatible Chat Completions adapter, including application function calls. */
+type CompatibleCall = { id: string; type: "function"; function: { name: string; arguments: string } };
+type CompatibleMessage = { role: string; content?: string | null; tool_calls?: CompatibleCall[]; tool_call_id?: string };
+async function runCompatible(
+  provider: CompatibleProvider, cfg: ProviderConfig, system: string,
+  turns: ChatTurn[], ctx: ToolContext, deadline: number,
+): Promise<{ answer: string; sources: Source[]; rounds: number }> {
+  const messages: CompatibleMessage[] = [{ role: "system", content: system }, ...turns];
+  const sources: Source[] = [];
+  const tools = TOOL_DEFINITIONS.map(t => ({ type: "function", function: {
+    name: t.name, description: t.description, parameters: t.input_schema,
+  } }));
+  for (let round = 1; round <= MAX_ROUNDS; round++) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new ProviderError("timeout", "AI provider timed out.", { fallbackOk: true });
+    let data: { choices?: { message?: CompatibleMessage; finish_reason?: string }[] };
+    try {
+      const response = await fetch(`${provider.apiUrl}/chat/completions`, {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${provider.apiKey}` },
+        body: JSON.stringify({ model: provider.model, messages, tools, tool_choice: "auto" }),
+        signal: AbortSignal.timeout(Math.min(remaining, cfg.requestTimeoutMs)),
+      });
+      if (!response.ok) {
+        const code = response.status === 429 ? "rate_limited" : response.status === 401 || response.status === 403 ? "auth" : response.status === 402 ? "billing" : "unavailable";
+        throw new ProviderError(code, `${provider.name} returned HTTP ${response.status}.`, { fallbackOk: true });
+      }
+      data = await response.json();
+    } catch (e) {
+      if (e instanceof ProviderError) throw e;
+      throw new ProviderError("unavailable", `${provider.name} request failed.`, { fallbackOk: true });
+    }
+    const choice = data.choices?.[0];
+    const message = choice?.message;
+    if (choice?.finish_reason === "content_filter") throw new ProviderError("bad_response", "The AI service declined to answer that.");
+    if (message?.tool_calls?.length) {
+      messages.push({ role: "assistant", content: message.content ?? null, tool_calls: message.tool_calls });
+      const results = await withinDeadline(Promise.all(message.tool_calls.map(async call => {
+        let args: unknown;
+        try { args = JSON.parse(call.function.arguments); } catch { return { role: "tool", tool_call_id: call.id, content: JSON.stringify({ error: "Invalid tool arguments" }) }; }
+        const out = await runTool(call.function.name, args, ctx);
+        if (!sources.some(s => s.label === out.label)) sources.push({ tool: call.function.name, label: out.label });
+        return { role: "tool", tool_call_id: call.id, content: JSON.stringify({ [out.isError ? "error" : "result"]: out.content }) };
+      })), deadline);
+      messages.push(...results);
+      continue;
+    }
+    const answer = message?.content?.trim();
+    if (answer) return { answer: answer + (choice?.finish_reason === "length" ? "\n\n_(Answer truncated.)_" : ""), sources, rounds: round };
+    throw new ProviderError("bad_response", "The AI service returned an empty answer.", { fallbackOk: true });
+  }
+  throw new ProviderError("bad_response", "Too many data lookups. Please ask a narrower question.");
+}
+
+/** Fast sequential failover across configured providers; no duplicate parallel model requests. */
 export async function runAssistant(opts: {
-  cfg: ProviderConfig;
-  system: string;
-  turns: ChatTurn[];
-  ctx: ToolContext;
+  cfg: ProviderConfig; system: string; turns: ChatTurn[]; ctx: ToolContext;
 }): Promise<{ answer: string; sources: Source[]; rounds: number; model: string }> {
   const { cfg } = opts;
   const deadline = Date.now() + cfg.totalTimeoutMs;
-  const models = [cfg.model, ...(cfg.fallbackModel ? [cfg.fallbackModel] : [])];
-
-  for (let i = 0; ; i++) {
-    const model = models[i]!;
+  const routes: { name: string; model: string; run: (until: number) => Promise<{ answer: string; sources: Source[]; rounds: number }> }[] = [];
+  if (cfg.apiKey) for (const model of [cfg.model, ...(cfg.fallbackModel ? [cfg.fallbackModel] : [])]) {
+    routes.push({ name: "gemini", model, run: until => runLoop(cfg, model, opts.system, opts.turns, opts.ctx, until) });
+  }
+  for (const p of cfg.compatibleProviders ?? []) routes.push({ name: p.name, model: p.model, run: until => runCompatible(p, cfg, opts.system, opts.turns, opts.ctx, until) });
+  let last: unknown = new ProviderError("not_configured", "No AI provider configured.");
+  let skipGemini = false;
+  for (let i = 0; i < routes.length; i++) {
+    const route = routes[i]!;
+    if (skipGemini && route.name === "gemini") continue;
+    const remaining = deadline - Date.now();
+    if (remaining < 1000) break;
+    const until = i === routes.length - 1 ? deadline : Math.min(deadline, Date.now() + Math.max(3000, Math.floor(remaining / (routes.length - i))));
+    const started = Date.now();
     try {
-      // Reserve part of the overall budget for the fallback model.
-      const modelDeadline = models[i + 1]
-        ? Math.min(deadline, Date.now() + Math.max(2_000, Math.floor((deadline - Date.now()) * 0.55)))
-        : deadline;
-      const started = Date.now();
-      const out = await runLoop(cfg, model, opts.system, opts.turns, opts.ctx, modelDeadline);
-      console.info(`[assistant] ${model} answered in ${Date.now() - started}ms (${out.rounds} rounds)`);
-      if (i > 0) console.warn(`[assistant] answered by fallback model ${model}`);
-      return { ...out, model };
+      const out = await withinDeadline(route.run(until), until);
+      console.info(`[assistant] ${route.name}/${route.model} answered in ${Date.now() - started}ms`);
+      return { ...out, model: route.model };
     } catch (e) {
-      const next = models[i + 1];
-      if (
-        e instanceof ProviderError &&
-        e.fallbackOk &&
-        next &&
-        deadline - Date.now() > MIN_TIME_LEFT_MS
-      ) {
-        console.warn(`[assistant] ${model} failed (${e.code}); trying fallback model ${next}`);
-        continue;
-      }
-      throw e;
+      last = e;
+      if (!(e instanceof ProviderError)) throw e;
+      if (e.code === "auth" || e.code === "billing") { if (route.name === "gemini") skipGemini = true; }
+      else if (!e.fallbackOk) throw e;
+      console.warn(`[assistant] ${route.name}/${route.model} failed (${e.code}); trying next provider`);
     }
   }
+  throw last;
 }
