@@ -51,13 +51,15 @@ export type ProviderConfig = {
   totalTimeoutMs: number;
 };
 
-/** Google's recommended model for new projects (checked against ai.google.dev model docs). */
-export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+/** Primary model: Gemini 3.5 Flash-Lite. */
+export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
+
 /**
- * Default fallback: Gemini 3.5 Flash-Lite. Google's model page lists it with function calling,
- * thinking and the generateContent API supported (ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite).
+ * Default fallback: Gemini 4 Hydrogen.
+ * Used when the primary model is unavailable,
+ * rate-limited, or encounters temporary errors.
  */
-export const DEFAULT_FALLBACK_MODEL = "gemini-3.5-flash-lite";
+export const DEFAULT_FALLBACK_MODEL = "gemini-4-hydrogen";
 
 /** At most this many attempts per model for temporary errors (the first try plus two retries). */
 export const MAX_ATTEMPTS = 3;
