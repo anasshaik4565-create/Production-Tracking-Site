@@ -41,7 +41,7 @@ export type ProviderConfig = {
   /** Used only when the primary model keeps failing with temporary or "model not available" errors. */
   fallbackModel: string | null;
   apiUrl: string;
-  /** "auto" = low for Gemini 3 models; "model-default" = send nothing; or an explicit level. */
+  /** "auto" = minimal for Flash-Lite, low for other Gemini 3 models; "model-default" = send nothing; or an explicit level. */
   thinkingLevel: "auto" | "model-default" | "low" | "medium" | "high";
   /** Time allowed for ONE request to Google. */
   requestTimeoutMs: number;
@@ -61,13 +61,13 @@ export const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite";
  */
 export const DEFAULT_FALLBACK_MODEL = "gemini-4-hydrogen";
 
-/** At most this many attempts per model for temporary errors (the first try plus two retries). */
-export const MAX_ATTEMPTS = 3;
+/** At most this many attempts per model for temporary errors (one attempt, then immediate fallback). */
+export const MAX_ATTEMPTS = 1;
 const MAX_BACKOFF_MS = 8_000;
 /** A rate-limit wait longer than this is not worth holding the user for: use the fallback instead. */
 const MAX_RATE_LIMIT_WAIT_MS = 5_000;
 /** Do not start another attempt, or the fallback, with less time than this left. */
-const MIN_TIME_LEFT_MS = 8_000;
+const MIN_TIME_LEFT_MS = 3_000;
 
 const intFrom = (v: string | undefined, fallback: number, min: number, max: number) => {
   const n = Number(v);
@@ -109,20 +109,34 @@ export function readProviderConfig(
       "",
     ),
     thinkingLevel,
-    requestTimeoutMs: intFrom(env["GEMINI_REQUEST_TIMEOUT_MS"], 35_000, 1_000, 80_000),
+    requestTimeoutMs: intFrom(env["GEMINI_REQUEST_TIMEOUT_MS"], 8_000, 1_000, 80_000),
     retryBaseMs: intFrom(env["GEMINI_RETRY_BASE_MS"], 1_000, 10, 10_000),
-    totalTimeoutMs: intFrom(env["GEMINI_TOTAL_TIMEOUT_MS"], 90_000, 5_000, 95_000),
+    totalTimeoutMs: intFrom(env["GEMINI_TOTAL_TIMEOUT_MS"], 35_000, 5_000, 95_000),
   };
 }
 
-/** The thinking level to send for a given model (Gemini 3 models default to "low" for speed and cost). */
+/** The thinking level to send for a given model (Flash-Lite uses minimal thinking; other Gemini 3 models use low). */
 function thinkingFor(cfg: ProviderConfig, model: string): string | null {
   if (cfg.thinkingLevel === "model-default") return null;
   if (cfg.thinkingLevel !== "auto") return cfg.thinkingLevel;
+  if (model === "gemini-3.5-flash-lite") return "minimal";
   return model.startsWith("gemini-3") ? "low" : null;
 }
 
 const MAX_ROUNDS = 6;
+
+function withinDeadline<T>(work: Promise<T>, deadline: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new ProviderError(
+      "timeout", "The assistant took too long to answer. Please try again.",
+      { fallbackOk: true },
+    )), Math.max(0, deadline - Date.now()));
+    work.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -182,8 +196,8 @@ async function callOnce(
 ): Promise<GeminiResponse> {
   const remaining = deadline - Date.now();
   if (remaining < 2000)
-    throw new ProviderError("timeout", "The assistant took too long to answer. Please try again.");
-  const generationConfig: Record<string, unknown> = { maxOutputTokens: 4096 };
+    throw new ProviderError("timeout", "The assistant took too long to answer. Please try again.", { fallbackOk: true });
+  const generationConfig: Record<string, unknown> = { maxOutputTokens: 2048 };
   const level = useThinking ? thinkingFor(cfg, model) : null;
   if (level) generationConfig["thinkingConfig"] = { thinkingLevel: level };
 
@@ -261,6 +275,7 @@ async function callOnce(
       throw new ProviderError(
         "billing",
         "The AI service needs billing enabled for this Google project. An administrator must check the Google AI Studio account.",
+        { fallbackOk: true },
       );
     // This model is not available to this key: never retried, but the fallback model may work.
     if (res.status === 404)
@@ -371,7 +386,7 @@ async function runLoop(
     if (calls.length > 0) {
       // Keep every part exactly as returned (Gemini 3 needs its thought signatures sent back).
       contents.push({ role: "model", parts });
-      const responses = await Promise.all(
+      const responses = await withinDeadline(Promise.all(
         calls.map(async (c) => {
           const out = await runTool(c.functionCall.name, c.functionCall.args, ctx);
           if (!sources.some((s) => s.label === out.label))
@@ -390,7 +405,7 @@ async function runLoop(
             },
           } as Part;
         }),
-      );
+      ), deadline);
       contents.push({ role: "user", parts: responses });
       continue;
     }
@@ -442,7 +457,13 @@ export async function runAssistant(opts: {
   for (let i = 0; ; i++) {
     const model = models[i]!;
     try {
-      const out = await runLoop(cfg, model, opts.system, opts.turns, opts.ctx, deadline);
+      // Reserve part of the overall budget for the fallback model.
+      const modelDeadline = models[i + 1]
+        ? Math.min(deadline, Date.now() + Math.max(2_000, Math.floor((deadline - Date.now()) * 0.55)))
+        : deadline;
+      const started = Date.now();
+      const out = await runLoop(cfg, model, opts.system, opts.turns, opts.ctx, modelDeadline);
+      console.info(`[assistant] ${model} answered in ${Date.now() - started}ms (${out.rounds} rounds)`);
       if (i > 0) console.warn(`[assistant] answered by fallback model ${model}`);
       return { ...out, model };
     } catch (e) {
